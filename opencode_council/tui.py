@@ -67,6 +67,12 @@ class TaskInputPanel(Vertical):
             classes="task-input",
         )
 
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Update run button when text changes."""
+        app = self.app
+        if app:
+            app.update_run_button()
+
 
 class ModelSelectionPanel(Vertical):
     """Middle panel for model selection."""
@@ -539,11 +545,13 @@ class ConfirmQuitScreen(Screen):
     """Confirm quit dialog."""
 
     def compose(self) -> ComposeResult:
-        yield Label("Quit OpenCode-Council?", classes="panel-label")
-        yield Label("Are you sure you want to quit?")
-        with Horizontal(id="confirm-actions"):
-            yield Button("Quit", id="confirm-yes", variant="error")
-            yield Button("Cancel", id="confirm-no", variant="primary")
+        with Container(id="confirm-wrapper"):
+            with Vertical(id="confirm-content"):
+                yield Label("Quit OpenCode-Council?", classes="panel-label")
+                yield Label("Are you sure you want to quit?")
+                with Horizontal(id="confirm-actions"):
+                    yield Button("Quit", id="confirm-yes", variant="error")
+                    yield Button("Cancel", id="confirm-no", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
@@ -602,6 +610,25 @@ class CouncilApp(App):
     SettingsScreen .action-row Button { margin: 0 1; }
     SettingsScreen #setting-actions { layout: horizontal; height: 3; margin-top: 1; }
     SettingsScreen #setting-actions Button { width: 15; margin: 0 1; }
+
+    ConfirmQuitScreen {
+        layers: overlay;
+    }
+    ConfirmQuitScreen #confirm-wrapper {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+    }
+    ConfirmQuitScreen #confirm-content {
+        align: center middle;
+        width: 40;
+        height: auto;
+        background: $surface;
+        border: thick $error;
+    }
+    ConfirmQuitScreen .panel-label { text-style: bold; color: $error; margin-bottom: 1; }
+    ConfirmQuitScreen #confirm-actions { layout: horizontal; height: 3; margin-top: 1; }
+    ConfirmQuitScreen #confirm-actions Button { width: 15; margin: 0 1; }
     """
 
     SCREENS = {
@@ -662,7 +689,10 @@ class CouncilApp(App):
         self.update_run_button()
 
     def update_run_button(self) -> None:
-        """Update run button based on selected models."""
+        """Update run button based on task and selected models."""
+        task_input = self.query_one("#task-input", TextArea)
+        task_text = task_input.text.strip()
+
         model_panel = self.query_one(ModelSelectionPanel)
         selected = model_panel.get_selected()
         count = len(selected)
@@ -671,7 +701,7 @@ class CouncilApp(App):
         count_label.update(f"Selected: {count} models")
 
         run_button = self.query_one("#run-button", Button)
-        run_button.disabled = count < 2
+        run_button.disabled = count < 2 or not task_text
 
     def on_key(self, event) -> None:
         """Handle key events."""
