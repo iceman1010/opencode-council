@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +27,7 @@ from opencode_council.config import (
     ToolPreferences,
 )
 from opencode_council.execution import ExecutionEngine, ModelStatus
-from opencode_council.tools import ToolDiscovery
+from opencode_council.tools import ToolDiscovery, has_cache_file, is_cache_valid
 
 
 class ModelCheckBox(Checkbox):
@@ -341,8 +342,6 @@ class SettingsScreen(Screen):
 
     def rescan_tools(self) -> None:
         """Rescan for tools."""
-        from opencode_council.tools import ToolDiscovery
-
         discovery = ToolDiscovery()
         tools = discovery.discover_all()
         self.query_one("#rescan-status", Label).update(f"Found {len(tools)} tools")
@@ -425,8 +424,6 @@ class SettingsScreen(Screen):
                 pass
 
         if not config.tools:
-            from opencode_council.tools import ToolDiscovery
-
             discovery = ToolDiscovery()
             config.tools = discovery.load_cached()
             if not config.tools:
@@ -560,6 +557,44 @@ class ConfirmQuitScreen(Screen):
         elif event.button.id == "confirm-no":
             self.app.pop_screen()
 
+    def on_key(self, event) -> None:
+        """Handle Escape to cancel quit."""
+        if event.key == "escape":
+            self.app.pop_screen()
+
+
+class CacheRebuildScreen(Screen):
+    """Modal screen shown during tool cache rebuild."""
+
+    def __init__(self, show_use_old_cache: bool = True):
+        super().__init__()
+        self._rebuild_complete = False
+        self._use_old_cache = False
+        self._abort_flag = threading.Event()
+        self._show_use_old_cache = show_use_old_cache
+
+    def compose(self) -> ComposeResult:
+        with Container(id="cache-rebuild-wrapper"):
+            with Vertical(id="cache-rebuild-content"):
+                if self._show_use_old_cache:
+                    yield Label("Rebuilding tool cache...", classes="panel-label")
+                    yield Label("This may take a moment...")
+                    yield Button("Use Old Cache", id="use-old-cache", variant="warning")
+                else:
+                    yield Label("Building tool cache...", classes="panel-label")
+                    yield Label("This may take a moment...")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "use-old-cache":
+            self._abort_flag.set()
+            self._use_old_cache = True
+            self.app.pop_screen()
+
+    @property
+    def abort_flag(self) -> threading.Event:
+        return self._abort_flag
+
 
 class CouncilApp(App):
     """Main application for OpenCode-Council."""
@@ -629,6 +664,24 @@ class CouncilApp(App):
     ConfirmQuitScreen .panel-label { text-style: bold; color: $error; margin-bottom: 1; }
     ConfirmQuitScreen #confirm-actions { layout: horizontal; height: 3; margin-top: 1; }
     ConfirmQuitScreen #confirm-actions Button { width: 15; margin: 0 1; }
+
+    CacheRebuildScreen {
+        layers: overlay;
+    }
+    CacheRebuildScreen #cache-rebuild-wrapper {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+    }
+    CacheRebuildScreen #cache-rebuild-content {
+        align: center middle;
+        width: 40;
+        height: auto;
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+    }
+    CacheRebuildScreen .panel-label { text-style: bold; color: $accent; margin-bottom: 1; }
     """
 
     SCREENS = {
@@ -680,10 +733,70 @@ class CouncilApp(App):
         """Refresh the model list."""
         config = self.config_manager.load()
         cache_ttl = getattr(config, "cache_ttl", 60)
-        discovery = ToolDiscovery()
-        tools = discovery.discover_all(cache_ttl=cache_ttl * 60 if cache_ttl else 3600)
-        self.config = config
+        cache_ttl_seconds = cache_ttl * 60 if cache_ttl else 3600
 
+        if is_cache_valid(cache_ttl_seconds):
+            discovery = ToolDiscovery()
+            tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
+            self._apply_tools(config, tools)
+            return
+
+        if has_cache_file():
+            modal = CacheRebuildScreen(show_use_old_cache=True)
+            self.push_screen(modal)
+
+            def do_rebuild():
+                discovery = ToolDiscovery()
+                tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
+                self.call_from_thread(self._on_rebuild_complete, config, tools, modal)
+
+            thread = threading.Thread(target=do_rebuild, daemon=True)
+            thread.start()
+        else:
+            self._do_rebuild(config, cache_ttl_seconds)
+
+    def _on_rebuild_complete(self, config, tools, modal) -> None:
+        """Called from background thread when rebuild completes."""
+        if modal._use_old_cache:
+            discovery = ToolDiscovery()
+            tools = discovery.load_cached()
+        self._apply_tools(config, tools)
+        if modal in self.screen_stack:
+            self.pop_screen()
+
+    def _do_rebuild(self, config, cache_ttl_seconds: int) -> None:
+        """Run cache rebuild in executor and show modal without old cache option."""
+        modal = CacheRebuildScreen(show_use_old_cache=False)
+        self.push_screen(modal)
+
+        def do_rebuild():
+            discovery = ToolDiscovery()
+            tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
+            self.call_from_thread(
+                self._on_rebuild_no_cache_complete, config, tools, modal
+            )
+
+        thread = threading.Thread(target=do_rebuild, daemon=True)
+        thread.start()
+
+    def _on_rebuild_no_cache_complete(self, config, tools, modal) -> None:
+        """Called from background thread when rebuild completes (no old cache)."""
+        self._apply_tools(config, tools)
+        if modal in self.screen_stack:
+            self.pop_screen()
+        """Run cache rebuild in executor and apply tools when done."""
+
+        def do_rebuild():
+            discovery = ToolDiscovery()
+            tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
+            self.call_from_thread(self._apply_tools, config, tools)
+
+        thread = threading.Thread(target=do_rebuild, daemon=True)
+        thread.start()
+
+    def _apply_tools(self, config, tools) -> None:
+        """Apply discovered tools to the UI."""
+        self.config = config
         model_panel = self.query_one(ModelSelectionPanel)
         model_panel.update_models(tools)
         self.update_run_button()
