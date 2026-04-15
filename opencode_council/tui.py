@@ -2,7 +2,6 @@
 
 import asyncio
 import re
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +19,12 @@ from textual.widgets import (
     TextArea,
 )
 
-from opencode_council.config import ConfigManager, CouncilConfig
+from opencode_council.config import (
+    ConfigManager,
+    CouncilConfig,
+    ToolPreference,
+    ToolPreferences,
+)
 from opencode_council.execution import ExecutionEngine, ModelStatus
 from opencode_council.tools import ToolDiscovery
 
@@ -165,37 +169,158 @@ class RunControlPanel(Vertical):
 
 
 class SettingsScreen(Screen):
-    """Settings screen."""
+    """Settings screen with tabs."""
 
     def __init__(self):
         super().__init__()
         self.config_manager = ConfigManager()
+        self.current_tab = "general"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses in settings screen."""
-        if event.button.id == "settings-save":
+        bid = event.button.id
+        if bid == "settings-save":
             self.save_settings()
-        elif event.button.id == "settings-clear-cache":
+        elif bid == "settings-clear-cache":
             self.clear_cache()
-        elif event.button.id == "settings-cancel":
+        elif bid == "settings-cancel":
             self.app.pop_screen()
+        elif bid == "tab-general":
+            self.show_tab("general")
+        elif bid == "tab-tools":
+            self.show_tab("tools")
+        elif bid == "tab-filters":
+            self.show_tab("filters")
+        elif bid == "tab-custom":
+            self.show_tab("custom")
+        elif bid == "rescan-tools":
+            self.rescan_tools()
+        elif bid == "reset-filters":
+            self.reset_filters()
+        elif bid == "verify-custom":
+            self.verify_custom_tool()
+        elif bid == "add-custom":
+            self.add_custom_tool()
+
+    def show_tab(self, tab: str) -> None:
+        """Switch to a different tab."""
+        self.current_tab = tab
+        for container in self.query(".settings-tab"):
+            container.add_class("hidden-tab")
+        self.query_one(f"#tab-{tab}").remove_class("hidden-tab")
+        for btn in self.query("SettingsScreen Button"):
+            if btn.id and btn.id.startswith("tab-"):
+                btn.variant = "primary" if btn.id == f"tab-{tab}" else "default"
 
     def save_settings(self) -> None:
         """Save settings."""
         output_dir = (
-            self.query_one("#setting-output-dir", TextArea).text.strip() or "council"
+            self.query_one("#setting-output-dir", TextArea).text.strip().split("\n")[0]
+            or "council"
         )
-        cache_ttl = self.query_one("#setting-cache-ttl", TextArea).text.strip() or "60"
+        cache_ttl_text = (
+            self.query_one("#setting-cache-ttl", TextArea).text.strip().split("\n")[0]
+            or "60"
+        )
 
         config = self.config_manager.load()
         config.default_output_dir = output_dir
-        pref = getattr(config, "preferences", {})
-        pref["cache_ttl"] = int(cache_ttl)
-        config.preferences = pref
+        config.cache_ttl = int(cache_ttl_text)
+        config.tool_preferences = self.collect_tool_preferences()
 
         self.config_manager.save(config)
         self.app.pop_screen()
         self.app.notify("Settings saved!")
+
+    def on_key(self, event) -> None:
+        """Handle keyboard navigation in settings."""
+        if self.current_tab != "filters":
+            return
+
+        if not hasattr(self, "_selected_filter_column"):
+            self._selected_filter_column = "providers"
+            self._selected_filter_index = 0
+
+        checkboxes = self._get_current_column_checkboxes()
+        if not checkboxes:
+            return
+
+        if event.key == "left":
+            self._selected_filter_column = "providers"
+            self._focus_current_filter()
+            event.prevent_default()
+        elif event.key == "right":
+            self._selected_filter_column = "models"
+            self._focus_current_filter()
+            event.prevent_default()
+        elif event.key == "up":
+            self._selected_filter_index = max(0, self._selected_filter_index - 1)
+            if self._selected_filter_index < len(checkboxes):
+                checkboxes[self._selected_filter_index].focus()
+            event.prevent_default()
+        elif event.key == "down":
+            self._selected_filter_index = min(
+                len(checkboxes) - 1, self._selected_filter_index + 1
+            )
+            if self._selected_filter_index < len(checkboxes):
+                checkboxes[self._selected_filter_index].focus()
+            event.prevent_default()
+        elif event.key == " ":
+            cb = self.focused
+            if cb and hasattr(cb, "value"):
+                cb.value = not cb.value
+                event.prevent_default()
+
+    def _get_current_column_checkboxes(self) -> list:
+        """Get checkboxes for current column."""
+        if not hasattr(self, "_selected_filter_column"):
+            self._selected_filter_column = "providers"
+        if self._selected_filter_column == "providers":
+            container = self.query_one("#providers-list")
+        else:
+            container = self.query_one("#models-list")
+        return [cb for cb in container.query("Checkbox")]
+
+    def _focus_current_filter(self) -> None:
+        """Focus the first checkbox in current column."""
+        checkboxes = self._get_current_column_checkboxes()
+        if checkboxes:
+            checkboxes[0].focus()
+            self._selected_filter_index = 0
+
+    def collect_tool_preferences(self) -> "ToolPreferences":
+        """Collect tool preferences from the UI."""
+        from opencode_council.config import ToolPreference, ToolPreferences
+
+        enabled_tools = []
+        hidden_providers = []
+        hidden_models = []
+        custom_tools = []
+
+        for tool in self.config_manager.load().tools.values():
+            checkbox = self.query_one(f"#tool-enabled-{tool.name}", Checkbox)
+            if checkbox.value:
+                enabled_tools.append(tool.name)
+
+        all_checkboxes = list(self.query("Checkbox"))
+        for cb in all_checkboxes:
+            if cb.id:
+                if cb.id.startswith("hide-provider-"):
+                    provider = cb.id.replace("hide-provider-", "")
+                    if cb.value:
+                        hidden_providers.append(provider)
+                elif cb.id.startswith("hide-model-"):
+                    model_id = cb.id.replace("hide-model-", "")
+                    full_model = model_id.replace("_", "/")
+                    if cb.value:
+                        hidden_models.append(full_model)
+
+        return ToolPreferences(
+            enabled_tools=enabled_tools,
+            hidden_providers=hidden_providers,
+            hidden_models=hidden_models,
+            custom_tools=custom_tools,
+        )
 
     def clear_cache(self) -> None:
         """Clear the tools cache."""
@@ -208,31 +333,224 @@ class SettingsScreen(Screen):
         except Exception as e:
             self.app.notify(f"Failed to clear cache: {e}", severity="error")
 
+    def rescan_tools(self) -> None:
+        """Rescan for tools."""
+        from opencode_council.tools import ToolDiscovery
+
+        discovery = ToolDiscovery()
+        tools = discovery.discover_all()
+        self.query_one("#rescan-status", Label).update(f"Found {len(tools)} tools")
+        self.app.notify(f"Found {len(tools)} tools")
+
+    def reset_filters(self) -> None:
+        """Reset all filters."""
+        for cb in self.query("Checkbox"):
+            if cb.id and (
+                cb.id.startswith("hide-provider-") or cb.id.startswith("hide-model-")
+            ):
+                cb.value = False
+        self.app.notify("Filters reset")
+
+    def verify_custom_tool(self) -> None:
+        """Verify a custom tool works."""
+        cmd = self.query_one("#custom-command", TextArea).text.strip()
+        path = self.query_one("#custom-path", TextArea).text.strip()
+
+        if not cmd:
+            self.app.notify("Enter command name", severity="warning")
+            return
+
+        import shutil
+
+        tool_path = shutil.which(cmd) or path
+        if not tool_path:
+            self.app.notify(f"Command '{cmd}' not found", severity="error")
+            return
+
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [cmd, "--version"], capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip().split("\n")[0]
+                self.query_one("#verify-status", Label).update(f"OK: {version}")
+                self.app.notify(f"Tool verified: {version}")
+            else:
+                self.query_one("#verify-status", Label).update(
+                    f"Error: {result.stderr}"
+                )
+                self.app.notify(f"Tool error: {result.stderr}", severity="error")
+        except Exception as e:
+            self.query_one("#verify-status", Label).update(f"Error: {e}")
+            self.app.notify(f"Failed: {e}", severity="error")
+
+    def add_custom_tool(self) -> None:
+        """Add a custom tool to the list."""
+        from opencode_council.config import ToolPreference
+
+        cmd = self.query_one("#custom-command", TextArea).text.strip()
+        path = self.query_one("#custom-path", TextArea).text.strip()
+
+        if not cmd:
+            self.app.notify("Enter command name", severity="warning")
+            return
+
+        config = self.config_manager.load()
+        config.tool_preferences.custom_tools.append(
+            ToolPreference(command=cmd, path=path, enabled=True)
+        )
+        self.config_manager.save(config)
+
+        self.query_one("#custom-command", TextArea).update("")
+        self.query_one("#custom-path", TextArea).update("")
+        self.app.notify(f"Added custom tool: {cmd}")
+
     def compose(self) -> ComposeResult:
         config = self.config_manager.load()
-        preferences = {"cache_ttl": 60}
-        if hasattr(config, "preferences"):
-            preferences = config.preferences
-        elif "preferences" in config.__dict__:
-            preferences = config.__dict__.get("preferences", preferences)
+
+        if not config.tools:
+            try:
+                app_config = self.app.config
+                if app_config and app_config.tools:
+                    config.tools = app_config.tools
+            except Exception:
+                pass
+
+        if not config.tools:
+            from opencode_council.tools import ToolDiscovery
+
+            discovery = ToolDiscovery()
+            config.tools = discovery.load_cached()
+            if not config.tools:
+                config.tools = discovery.discover_all()
+
+        tool_prefs = config.tool_preferences
+        cache_ttl_value = config.cache_ttl
 
         yield Label("Settings", classes="panel-label")
-        yield Label("Output folder:")
-        yield TextArea(
-            config.default_output_dir or "council",
-            id="setting-output-dir",
-            classes="setting-input",
-        )
-        yield Label("Cache TTL (minutes):")
-        yield TextArea(
-            str(preferences.get("cache_ttl", 60)),
-            id="setting-cache-ttl",
-            classes="setting-input",
-        )
+
+        with Horizontal(id="settings-tabs"):
+            yield Button("General", id="tab-general", variant="primary")
+            yield Button("Tools", id="tab-tools")
+            yield Button("Filters", id="tab-filters")
+            yield Button("Custom", id="tab-custom")
+
+        with Vertical(id="tab-general", classes="settings-tab"):
+            yield Label("Output folder:")
+            yield TextArea(
+                config.default_output_dir or "council",
+                id="setting-output-dir",
+                classes="setting-input",
+            )
+            yield Label("Cache TTL (minutes):")
+            yield TextArea(
+                str(cache_ttl_value),
+                id="setting-cache-ttl",
+                classes="setting-input",
+            )
+
+        def _safe_id(s):
+            return re.sub(r"[^a-zA-Z0-9_-]", "_", s)[:40]
+
+        with Vertical(id="tab-tools", classes="settings-tab hidden-tab"):
+            yield Label("Enable/Disable Tools:")
+            with Vertical(id="tools-list"):
+                for tool_name, tool in config.tools.items():
+                    is_enabled = tool.enabled
+                    if tool_prefs.enabled_tools:
+                        is_enabled = tool_name in tool_prefs.enabled_tools
+                    yield Checkbox(
+                        f"{tool_name}  ({tool.path})  v{tool.version}",
+                        id=f"tool-enabled-{tool_name}",
+                        value=is_enabled,
+                    )
+            yield Label("", id="rescan-status")
+            with Horizontal(classes="action-row"):
+                yield Button("Rescan", id="rescan-tools", variant="success")
+
+        all_providers = set()
+        all_models = {}
+        for tool in config.tools.values():
+            for model in tool.available_models:
+                if "/" in model:
+                    provider = model.split("/")[0]
+                    all_providers.add(provider)
+                    if provider not in all_models:
+                        all_models[provider] = []
+                    all_models[provider].append(model)
+
+        with Vertical(id="tab-filters", classes="settings-tab hidden-tab"):
+            with Horizontal(id="filter-columns"):
+                with Vertical(id="filter-providers"):
+                    yield Label("Providers:")
+                    with Vertical(id="providers-list", classes="filter-list"):
+                        for provider in sorted(all_providers):
+                            yield Checkbox(
+                                provider,
+                                id=f"hide-provider-{_safe_id(provider)}",
+                                value=provider in set(tool_prefs.hidden_providers),
+                            )
+
+                with Vertical(id="filter-models"):
+                    yield Label("Models:")
+                    with Vertical(id="models-list", classes="filter-list"):
+                        used_ids = set()
+                        for provider in sorted(all_models.keys()):
+                            yield Label(f"[{provider}]", classes="filter-provider")
+                            for model in sorted(all_models[provider]):
+                                full = f"{provider}/{model}"
+                                safe = _safe_id(full)
+                                if safe in used_ids:
+                                    safe = f"{safe}_{len(used_ids)}"
+                                used_ids.add(safe)
+                                yield Checkbox(
+                                    model,
+                                    id=f"hide-model-{safe}",
+                                    value=full in set(tool_prefs.hidden_models),
+                                )
+
+            with Horizontal(classes="action-row"):
+                yield Button("Reset", id="reset-filters", variant="warning")
+
+        with Vertical(id="tab-custom", classes="settings-tab hidden-tab"):
+            yield Label("Add Custom Tool:")
+            yield Label("Command:")
+            yield TextArea("", id="custom-command", classes="setting-input")
+            yield Label("Path:")
+            yield TextArea("", id="custom-path", classes="setting-input")
+            yield Label("", id="verify-status")
+            with Horizontal(classes="action-row"):
+                yield Button("Test", id="verify-custom", variant="success")
+                yield Button("Add", id="add-custom", variant="primary")
+            yield Label("Custom Tools:")
+            with Vertical(id="custom-tools-list"):
+                for ct in tool_prefs.custom_tools:
+                    yield Label(f"{ct.command} ({ct.path})")
+
         with Horizontal(id="setting-actions"):
             yield Button("Save", id="settings-save", variant="primary")
             yield Button("Clear Cache", id="settings-clear-cache", variant="warning")
             yield Button("Cancel", id="settings-cancel", variant="default")
+
+
+class ConfirmQuitScreen(Screen):
+    """Confirm quit dialog."""
+
+    def compose(self) -> ComposeResult:
+        yield Label("Quit OpenCode-Council?", classes="panel-label")
+        yield Label("Are you sure you want to quit?")
+        with Horizontal(id="confirm-actions"):
+            yield Button("Quit", id="confirm-yes", variant="error")
+            yield Button("Cancel", id="confirm-no", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "confirm-yes":
+            self.app.exit()
+        elif event.button.id == "confirm-no":
+            self.app.pop_screen()
 
 
 class CouncilApp(App):
@@ -260,28 +578,50 @@ class CouncilApp(App):
 
     SettingsScreen {
         align: center middle;
-        width: 50;
-        height: auto;
+        width: 60;
+        max-height: 90%;
         background: $surface;
         border: solid $primary;
-        padding: 1;
+        padding: 1 2;
     }
     SettingsScreen .panel-label { text-style: bold; color: $primary; margin-bottom: 1; }
     SettingsScreen .setting-input { height: 3; margin-bottom: 1; }
-    SettingsScreen #setting-actions { layout: horizontal; height: 3; align: center middle; }
-SettingsScreen #setting-actions Button { width: 15; margin: 0 1; }
+    SettingsScreen #settings-tabs { layout: horizontal; height: 3; margin-bottom: 1; }
+    SettingsScreen #settings-tabs Button { margin: 0 1; }
+    SettingsScreen .settings-tab { layout: vertical; height: 20; overflow-y: auto; }
+    SettingsScreen .hidden-tab { display: none; }
+    SettingsScreen #tools-list { layout: vertical; height: auto; max-height: 12; overflow-y: auto; }
+    SettingsScreen #tools-list Checkbox { margin: 0 0 0 1; }
+    SettingsScreen .filter-list { layout: vertical; height: auto; max-height: 14; overflow-y: auto; }
+    SettingsScreen .filter-list Checkbox { margin: 0 0 0 1; }
+    SettingsScreen .filter-provider { text-style: bold; color: $accent; margin-top: 1; margin-left: 2; }
+    SettingsScreen #filter-columns { layout: horizontal; height: auto; }
+    SettingsScreen #filter-providers { width: 1fr; margin-right: 2; }
+    SettingsScreen #filter-models { width: 2fr; }
+    SettingsScreen .action-row { layout: horizontal; height: 3; margin-top: 1; }
+    SettingsScreen .action-row Button { margin: 0 1; }
+    SettingsScreen #setting-actions { layout: horizontal; height: 3; margin-top: 1; }
+    SettingsScreen #setting-actions Button { width: 15; margin: 0 1; }
     """
 
     SCREENS = {
         "settings": SettingsScreen,
+        "confirm_quit": ConfirmQuitScreen,
     }
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("escape", "quit", "Quit"),
+        ("q", "handle_quit", "Quit"),
+        ("escape", "handle_quit", "Quit"),
         ("ctrl+s", "push_screen('settings')", "Settings"),
         ("f1", "push_screen('settings')", "Settings"),
     ]
+
+    def action_handle_quit(self) -> None:
+        """Handle quit - pop from settings first, then confirm quit."""
+        if len(self.screen_stack) > 1:
+            self.pop_screen()
+        else:
+            self.push_screen(ConfirmQuitScreen())
 
     def __init__(self):
         super().__init__()

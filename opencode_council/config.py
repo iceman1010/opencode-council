@@ -10,6 +10,54 @@ from opencode_council.tools import DiscoveredTool, ToolDiscovery
 
 
 @dataclass
+class ToolPreference:
+    """Preference for a single tool."""
+
+    command: str
+    path: str = ""
+    enabled: bool = True
+
+
+@dataclass
+class ToolPreferences:
+    """Preferences for tools and model filtering."""
+
+    enabled_tools: list[str] = field(default_factory=list)
+    hidden_providers: list[str] = field(default_factory=list)
+    hidden_models: list[str] = field(default_factory=list)
+    custom_tools: list[ToolPreference] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "enabled_tools": self.enabled_tools,
+            "hidden_providers": self.hidden_providers,
+            "hidden_models": self.hidden_models,
+            "custom_tools": [
+                {"command": t.command, "path": t.path, "enabled": t.enabled}
+                for t in self.custom_tools
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ToolPreferences":
+        """Create from dictionary."""
+        return cls(
+            enabled_tools=data.get("enabled_tools", []),
+            hidden_providers=data.get("hidden_providers", []),
+            hidden_models=data.get("hidden_models", []),
+            custom_tools=[
+                ToolPreference(
+                    command=t.get("command", ""),
+                    path=t.get("path", ""),
+                    enabled=t.get("enabled", True),
+                )
+                for t in data.get("custom_tools", [])
+            ],
+        )
+
+
+@dataclass
 class CouncilConfig:
     """Configuration for the council run."""
 
@@ -21,6 +69,7 @@ class CouncilConfig:
     auto_refresh_models: bool = True
     theme: str = "dark"
     cache_ttl: int = 60
+    tool_preferences: ToolPreferences = field(default_factory=ToolPreferences)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -35,6 +84,7 @@ class CouncilConfig:
                 "theme": self.theme,
                 "cache_ttl": self.cache_ttl,
             },
+            "tool_preferences": self.tool_preferences.to_dict(),
         }
 
     @classmethod
@@ -53,6 +103,7 @@ class CouncilConfig:
             tools[name] = tool
 
         preferences = data.get("preferences", {})
+        tool_prefs = ToolPreferences.from_dict(data.get("tool_preferences", {}))
 
         return cls(
             tools=tools,
@@ -63,6 +114,7 @@ class CouncilConfig:
             auto_refresh_models=preferences.get("auto_refresh_models", True),
             theme=preferences.get("theme", "dark"),
             cache_ttl=preferences.get("cache_ttl", 60),
+            tool_preferences=tool_prefs,
         )
 
     def get_all_models(self) -> list[tuple[str, str]]:

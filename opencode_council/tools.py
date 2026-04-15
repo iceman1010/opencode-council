@@ -55,6 +55,40 @@ def _load_cache(ttl: Optional[int] = None) -> Optional[dict]:
     return None
 
 
+def _load_expired_cache() -> Optional[dict]:
+    """Load cached data even if expired."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if CACHE_FILE.exists():
+            with open(CACHE_FILE) as f:
+                data = json.load(f)
+            return data.get("tools", {})
+    except Exception:
+        pass
+    return None
+
+
+def has_cache_file() -> bool:
+    """Check if cache file exists."""
+    try:
+        return CACHE_FILE.exists()
+    except Exception:
+        return False
+
+
+def is_cache_valid(ttl: Optional[int] = None) -> bool:
+    """Check if cache file is valid (not expired)."""
+    cache_ttl = ttl if ttl is not None else CACHE_TTL
+    try:
+        if CACHE_FILE.exists():
+            with open(CACHE_FILE) as f:
+                data = json.load(f)
+            return time.time() - data.get("timestamp", 0) < cache_ttl
+    except Exception:
+        pass
+    return False
+
+
 def _save_cache(tools: dict) -> None:
     """Save tool discovery results to cache."""
     try:
@@ -75,6 +109,24 @@ class ToolDiscovery:
     def which(self, command: str) -> Optional[str]:
         """Find the full path of a command using shutil.which."""
         return shutil.which(command)
+
+    def load_cached(self) -> dict[str, "DiscoveredTool"]:
+        """Load tools from cache only without refreshing."""
+        cached = _load_expired_cache()
+        self.tools = {}
+        if cached:
+            for name, data in cached.items():
+                tool = DiscoveredTool(
+                    name=name,
+                    command=data.get("command", name),
+                    path=data.get("path", ""),
+                    version=data.get("version", ""),
+                    available_models=data.get("available_models", []),
+                    authenticated_providers=data.get("authenticated_providers", []),
+                    enabled=data.get("enabled", True),
+                )
+                self.tools[name] = tool
+        return self.tools
 
     def discover_all(
         self, cache_ttl: Optional[int] = None
