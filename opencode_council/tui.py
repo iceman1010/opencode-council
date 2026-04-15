@@ -127,7 +127,7 @@ class ModelSelectionPanel(Vertical):
 
         for group, checkboxes in widgets_to_mount:
             model_list.mount(group)
-            group.collapsed = False
+            group.collapsed = True
             for checkbox in checkboxes:
                 group.mount(checkbox)
 
@@ -139,7 +139,13 @@ class ModelSelectionPanel(Vertical):
         if not self.all_checkboxes:
             return
 
-        self.current_index = (self.current_index + direction) % len(self.all_checkboxes)
+        new_index = self.current_index + direction
+        if new_index < 0:
+            new_index = 0
+        elif new_index >= len(self.all_checkboxes):
+            new_index = len(self.all_checkboxes) - 1
+
+        self.current_index = new_index
         self.all_checkboxes[self.current_index].focus()
 
     def get_selected(self) -> list[tuple[str, str]]:
