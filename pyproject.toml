@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencode-council"
+version = "0.1.0"
+description = "Multi-model collaborative analysis tool"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.1.0",
+]
+
+[project.scripts]
+opencode-council = "opencode_council.tui:run_app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["opencode_council*"]
+
+[tool.setuptools.package-data]
+opencode_council = ["*.md"]
