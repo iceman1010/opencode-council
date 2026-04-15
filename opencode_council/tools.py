@@ -1,8 +1,10 @@
 """CLI tool discovery system for OpenCode-Council."""
 
 import json
+import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -33,6 +35,36 @@ class DiscoveredTool:
 
 KNOWN_TOOLS = ["opencode", "kilo"]
 
+CACHE_DIR = Path.home() / ".cache" / "opencode-council"
+CACHE_FILE = CACHE_DIR / "tools_cache.json"
+CACHE_TTL = 3600
+
+
+def _load_cache(ttl: Optional[int] = None) -> Optional[dict]:
+    """Load cached tool discovery results."""
+    cache_ttl = ttl if ttl is not None else CACHE_TTL
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if CACHE_FILE.exists():
+            with open(CACHE_FILE) as f:
+                data = json.load(f)
+            if time.time() - data.get("timestamp", 0) < cache_ttl:
+                return data.get("tools", {})
+    except Exception:
+        pass
+    return None
+
+
+def _save_cache(tools: dict) -> None:
+    """Save tool discovery results to cache."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        data = {"timestamp": time.time(), "tools": tools}
+        with open(CACHE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
 
 class ToolDiscovery:
     """Discovers and manages opencode-compatible CLI tools."""
@@ -44,13 +76,33 @@ class ToolDiscovery:
         """Find the full path of a command using shutil.which."""
         return shutil.which(command)
 
-    def discover_all(self) -> dict[str, DiscoveredTool]:
+    def discover_all(
+        self, cache_ttl: Optional[int] = None
+    ) -> dict[str, DiscoveredTool]:
         """Discover all known opencode-compatible tools."""
+        cached = _load_cache(cache_ttl)
+        if cached:
+            for name, data in cached.items():
+                tool = DiscoveredTool(
+                    name=name,
+                    command=data.get("command", name),
+                    path=data.get("path", ""),
+                    version=data.get("version", ""),
+                    available_models=data.get("available_models", []),
+                    authenticated_providers=data.get("authenticated_providers", []),
+                    enabled=data.get("enabled", True),
+                )
+                self.tools[name] = tool
+            return self.tools
+
         self.tools = {}
         for tool_name in KNOWN_TOOLS:
             tool = self.discover_tool(tool_name)
             if tool:
                 self.tools[tool_name] = tool
+
+        cache_data = {name: tool.to_dict() for name, tool in self.tools.items()}
+        _save_cache(cache_data)
         return self.tools
 
     def discover_tool(self, tool_name: str) -> Optional[DiscoveredTool]:

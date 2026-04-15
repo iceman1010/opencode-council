@@ -20,6 +20,7 @@ class CouncilConfig:
     max_concurrent_models: int = 4
     auto_refresh_models: bool = True
     theme: str = "dark"
+    cache_ttl: int = 60
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -32,6 +33,7 @@ class CouncilConfig:
                 "max_concurrent_models": self.max_concurrent_models,
                 "auto_refresh_models": self.auto_refresh_models,
                 "theme": self.theme,
+                "cache_ttl": self.cache_ttl,
             },
         }
 
@@ -60,11 +62,12 @@ class CouncilConfig:
             max_concurrent_models=preferences.get("max_concurrent_models", 4),
             auto_refresh_models=preferences.get("auto_refresh_models", True),
             theme=preferences.get("theme", "dark"),
+            cache_ttl=preferences.get("cache_ttl", 60),
         )
 
     def get_all_models(self) -> list[tuple[str, str]]:
         """Get all available models with tool prefix.
-        
+
         Returns list of (full_model_name, tool_name) tuples.
         """
         models = []
@@ -75,12 +78,14 @@ class CouncilConfig:
                     models.append((full_name, tool_name))
         return models
 
-    def get_model_info(self, full_model_name: str) -> tuple[Optional[DiscoveredTool], Optional[str]]:
+    def get_model_info(
+        self, full_model_name: str
+    ) -> tuple[Optional[DiscoveredTool], Optional[str]]:
         """Get tool and model name from full model name.
-        
+
         Args:
             full_model_name: Full model name in format "tool/model"
-            
+
         Returns:
             Tuple of (DiscoveredTool, model_name)
         """
