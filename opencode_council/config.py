@@ -69,6 +69,7 @@ class CouncilConfig:
     auto_refresh_models: bool = True
     theme: str = "dark"
     cache_ttl: int = 60
+    debug_logging: bool = True
     tool_preferences: ToolPreferences = field(default_factory=ToolPreferences)
 
     def to_dict(self) -> dict:
@@ -83,6 +84,7 @@ class CouncilConfig:
                 "auto_refresh_models": self.auto_refresh_models,
                 "theme": self.theme,
                 "cache_ttl": self.cache_ttl,
+                "debug_logging": self.debug_logging,
             },
             "tool_preferences": self.tool_preferences.to_dict(),
         }
@@ -114,6 +116,7 @@ class CouncilConfig:
             auto_refresh_models=preferences.get("auto_refresh_models", True),
             theme=preferences.get("theme", "dark"),
             cache_ttl=preferences.get("cache_ttl", 60),
+            debug_logging=preferences.get("debug_logging", True),
             tool_preferences=tool_prefs,
         )
 
