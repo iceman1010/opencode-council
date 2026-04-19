@@ -36,21 +36,19 @@ class ModelExecution:
     error: Optional[str] = None
 
 
-ANALYSIS_PROMPT_TEMPLATE = """Analyze the following task and provide a detailed analysis of what needs to be done, including:
-- Problem understanding
-- Requirements extraction
-- Technical considerations
-- Potential challenges
+ANALYSIS_PROMPT_TEMPLATE = """Analyze the following task and provide a detailed analysis:
 
 Task: {task}
 
-Write your analysis as OUTPUT (do NOT create any files):"""
+Write your analysis as your OUTPUT (the system will save it to a file):"""
 
-PLAN_PROMPT_TEMPLATE = """Based on your analysis, provide a solution or implementation plan as OUTPUT (do NOT create any files).
+PLAN_PROMPT_TEMPLATE = """Based on your analysis, provide a solution or implementation plan:
 
-Task: {task}"""
+Task: {task}
 
-COMMENTARY_PROMPT_TEMPLATE = """Review the following work from another model and provide commentary.
+Write your plan as your OUTPUT (the system will save it to a file):"""
+
+COMMENTARY_PROMPT_TEMPLATE = """Review the following work from another model:
 
 Model: {other_model}
 Analysis:
@@ -59,7 +57,7 @@ Analysis:
 Solution/Plan:
 {other_plan}
 
-Provide your commentary as OUTPUT (do NOT create any files):
+Write your commentary as your OUTPUT (the system will save it to a file):
 1. Commentary on their analysis
 2. Commentary on their solution
 3. Comparison with your own approach"""
