@@ -23,7 +23,7 @@ def main():
     parser.add_argument(
         "--output-dir", type=str, default="council", help="Output directory"
     )
-    parser.add_argument("--no-debug", action="store_true", help="Disable debug logging")
+
     parser.add_argument(
         "--refresh-cache",
         action="store_true",
@@ -36,7 +36,16 @@ def main():
     args = parser.parse_args()
 
     if args.version:
-        print("OpenCode Council v0.1.1")
+        try:
+            from importlib.metadata import version
+
+            package_version = version("opencode-council")
+        except ImportError:
+            # Fallback for Python < 3.8
+            import pkg_resources
+
+            package_version = pkg_resources.get_distribution("opencode-council").version
+        print(f"OpenCode Council v{package_version}")
         return
 
     if args.refresh_cache:
@@ -66,7 +75,7 @@ def main():
 
             manager = ConfigManager()
             config = manager.load()
-            config.debug_logging = not args.no_debug
+            config.debug_logging = True
 
             run_dir = manager.create_run_dir(args.output_dir)
             print(f"Running task in: {run_dir}")

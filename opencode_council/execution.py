@@ -153,8 +153,9 @@ class ExecutionEngine:
         #     )
 
         for full_name in selected_models:
-            # Split on FIRST slash only (models may contain slashes)
-            tool_name, model_name = full_name.split("/", 1)
+            # Get tool name (first part), keep full model name for CLI
+            tool_name = full_name.split("/")[0]
+            model_name = full_name  # Keep full name like "kilo/kilo-auto/free"
             # Create unique directory for each full model name (replace slashes)
             safe_model_name = model_name.replace("/", "_")
             model_dir = self.run_dir / tool_name / safe_model_name

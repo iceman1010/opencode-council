@@ -946,12 +946,12 @@ class CouncilApp(App):
                     row = Horizontal(
                         Label(
                             f"🔄 {model_name}",
-                            id=f"label-{model_name.replace('/', '-')}",
+                            id=f"label-{model_name.replace('/', '-').replace('.', '_').replace(':', '_')}",
                             classes="model-status-label",
                         ),
                         Button(
                             "Cancel",
-                            id=f"cancel-{model_name.replace('/', '-')}",
+                            id=f"cancel-{model_name.replace('/', '-').replace('.', '_').replace(':', '_')}",
                             variant="warning",
                             classes="model-cancel-btn",
                         ),
@@ -965,11 +965,14 @@ class CouncilApp(App):
                 if model_name not in self.model_rows:
                     return
 
+                safe_id = (
+                    model_name.replace("/", "-").replace(".", "_").replace(":", "_")
+                )
                 label = self.model_rows[model_name].query_one(
-                    f"#label-{model_name}", Label
+                    f"#label-{safe_id}", Label
                 )
                 btn = self.model_rows[model_name].query_one(
-                    f"#cancel-{model_name}", Button
+                    f"#cancel-{safe_id}", Button
                 )
 
                 status_icons = {
@@ -1104,3 +1107,4 @@ def run_app() -> None:
 
 if __name__ == "__main__":
     run_app()
+import re
