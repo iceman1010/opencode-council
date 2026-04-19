@@ -129,8 +129,7 @@ class CouncilConfig:
         for tool_name, tool in self.tools.items():
             if tool.enabled:
                 for model in tool.available_models:
-                    full_name = f"{tool_name}/{model}"
-                    models.append((full_name, tool_name))
+                    models.append((model, tool_name))
         return models
 
     def get_model_info(
@@ -173,6 +172,11 @@ class ConfigManager:
                 self.config = self._create_default()
         else:
             self.config = self._create_default()
+
+        # Always refresh models if none found
+        if not self.config.tools:
+            self.config = self._create_default()
+
         return self.config
 
     def save(self, config: Optional[CouncilConfig] = None) -> None:

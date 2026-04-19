@@ -729,7 +729,8 @@ class CouncilApp(App):
         self.refresh_models()
         self.query_one("#task-input").focus()
 
-    def refresh_models(self) -> None:
+    @work(exclusive=True)
+    async def refresh_models(self) -> None:
         """Refresh the model list."""
         config = self.config_manager.load()
         cache_ttl = getattr(config, "cache_ttl", 60)
@@ -743,7 +744,10 @@ class CouncilApp(App):
 
         if has_cache_file():
             modal = CacheRebuildScreen(show_use_old_cache=True)
-            self.push_screen(modal)
+            await self.push_screen(modal)
+
+            # Yield control to event loop to ensure modal renders before starting rebuild
+            await asyncio.sleep(0.01)
 
             def do_rebuild():
                 discovery = ToolDiscovery()
@@ -753,7 +757,7 @@ class CouncilApp(App):
             thread = threading.Thread(target=do_rebuild, daemon=True)
             thread.start()
         else:
-            self._do_rebuild(config, cache_ttl_seconds)
+            await self._do_rebuild(config, cache_ttl_seconds)
 
     def _on_rebuild_complete(self, config, tools, modal) -> None:
         """Called from background thread when rebuild completes."""
@@ -764,10 +768,13 @@ class CouncilApp(App):
         if modal in self.screen_stack:
             self.pop_screen()
 
-    def _do_rebuild(self, config, cache_ttl_seconds: int) -> None:
+    async def _do_rebuild(self, config, cache_ttl_seconds: int) -> None:
         """Run cache rebuild in executor and show modal without old cache option."""
         modal = CacheRebuildScreen(show_use_old_cache=False)
-        self.push_screen(modal)
+        await self.push_screen(modal)
+
+        # Yield control to event loop to ensure modal renders before starting rebuild
+        await asyncio.sleep(0.01)
 
         def do_rebuild():
             discovery = ToolDiscovery()
@@ -784,15 +791,6 @@ class CouncilApp(App):
         self._apply_tools(config, tools)
         if modal in self.screen_stack:
             self.pop_screen()
-        """Run cache rebuild in executor and apply tools when done."""
-
-        def do_rebuild():
-            discovery = ToolDiscovery()
-            tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
-            self.call_from_thread(self._apply_tools, config, tools)
-
-        thread = threading.Thread(target=do_rebuild, daemon=True)
-        thread.start()
 
     def _apply_tools(self, config, tools) -> None:
         """Apply discovered tools to the UI."""
@@ -882,6 +880,18 @@ class CouncilApp(App):
         self.mount(settings)
         settings.focus()
 
+    def on_progress(self, model_name: str, status: ModelStatus) -> None:
+        """Handle progress updates from execution engine."""
+        if hasattr(self, "_execution_overlay") and self._execution_overlay:
+            self.call_from_thread(
+                self._execution_overlay.update_status, model_name, status
+            )
+
+    async def _refresh_ui(self) -> None:
+        """Force UI refresh."""
+        await asyncio.sleep(0)
+        self.refresh()
+
     @work(exclusive=True)
     async def run_models(self, task: str, selected: list[str]) -> None:
         """Run models in parallel."""
@@ -897,6 +907,106 @@ class CouncilApp(App):
         run_button = self.query_one("#run-button", Button)
         run_button.disabled = True
 
+        # Yield control to let filesystem operations complete before mounting overlay
+        await asyncio.sleep(0.05)
+
+        # Create and show execution overlay
+        from textual.screen import ModalScreen
+        from textual.containers import Vertical, Horizontal, ScrollableContainer
+
+        class ExecutionOverlay(ModalScreen):
+            """Overlay screen showing execution progress."""
+
+            BINDINGS = [
+                ("escape", "cancel", "Cancel All"),
+                ("q", "cancel", "Cancel All"),
+            ]
+
+            def __init__(self, engine: ExecutionEngine, **kwargs):
+                super().__init__(**kwargs)
+                self.engine = engine
+                self.model_rows = {}
+
+            def compose(self) -> ComposeResult:
+                with Vertical(id="execution-overlay"):
+                    yield Label(
+                        "Running Models", id="overlay-title", classes="overlay-header"
+                    )
+                    yield Label(f"Task: {self.engine.task[:60]}...", id="overlay-task")
+                    yield ScrollableContainer(id="model-status-list")
+                    with Horizontal(id="overlay-footer"):
+                        yield Button(
+                            "Cancel All", id="cancel-all-button", variant="error"
+                        )
+                        yield Label("ESC / q = Cancel All", id="overlay-help")
+
+            def on_mount(self) -> None:
+                container = self.query_one("#model-status-list", ScrollableContainer)
+                for model_name in self.engine.executions.keys():
+                    row = Horizontal(
+                        Label(
+                            f"🔄 {model_name}",
+                            id=f"label-{model_name.replace('/', '-')}",
+                            classes="model-status-label",
+                        ),
+                        Button(
+                            "Cancel",
+                            id=f"cancel-{model_name.replace('/', '-')}",
+                            variant="warning",
+                            classes="model-cancel-btn",
+                        ),
+                        classes="model-status-row",
+                    )
+                    container.mount(row)
+                    self.model_rows[model_name] = row
+
+            def update_status(self, model_name: str, status: ModelStatus) -> None:
+                """Update status display for a model."""
+                if model_name not in self.model_rows:
+                    return
+
+                label = self.model_rows[model_name].query_one(
+                    f"#label-{model_name}", Label
+                )
+                btn = self.model_rows[model_name].query_one(
+                    f"#cancel-{model_name}", Button
+                )
+
+                status_icons = {
+                    ModelStatus.PENDING: "⏳",
+                    ModelStatus.RUNNING: "🔄",
+                    ModelStatus.ANALYSIS_COMPLETE: "✅",
+                    ModelStatus.PLAN_COMPLETE: "✅",
+                    ModelStatus.COMPLETE: "✅",
+                    ModelStatus.FAILED: "❌",
+                    ModelStatus.CANCELLED: "🚫",
+                }
+                icon = status_icons.get(status, "⏳")
+                label.update(f"{icon} {model_name}")
+
+                if status in (ModelStatus.RUNNING, ModelStatus.PENDING):
+                    btn.disabled = False
+                else:
+                    btn.disabled = True
+
+                self.refresh()
+
+            def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "cancel-all-button":
+                    self.engine.cancel_all()
+                    self.dismiss()
+                elif event.button.id and event.button.id.startswith("cancel-"):
+                    model_name = event.button.id[7:]
+                    self.engine.cancel_model(model_name)
+                    event.button.disabled = True
+
+            def action_cancel(self) -> None:
+                self.engine.cancel_all()
+                self.dismiss()
+
+        self._execution_overlay = ExecutionOverlay(self.engine)
+        await self.push_screen(self._execution_overlay)
+
         try:
             await self.engine.run_analysis_phase()
             await self.engine.run_plan_phase()
@@ -906,7 +1016,79 @@ class CouncilApp(App):
         finally:
             run_button.disabled = False
 
-        self.notify("Execution complete!")
+        # Open result preview screen automatically
+        from textual.widgets import Markdown, Tree
+        from textual.containers import Horizontal, VerticalScroll
+        from pathlib import Path
+        from textual.widgets.tree import TreeNode
+
+        class ResultPreviewScreen(Screen):
+            """Result preview screen for completed runs."""
+
+            BINDINGS = [
+                ("escape", "dismiss", "Close"),
+                ("q", "dismiss", "Close"),
+            ]
+
+            def __init__(self, run_dir: Path, **kwargs):
+                super().__init__(**kwargs)
+                self.run_dir = run_dir
+
+            def compose(self) -> ComposeResult:
+                with Horizontal(id="result-preview"):
+                    with VerticalScroll(id="result-tree-panel"):
+                        yield Label("Results", id="result-header")
+                        tree = Tree("Run Directory", id="result-tree")
+                        tree.root.expand()
+                        self._build_tree(tree.root, self.run_dir)
+                        yield tree
+                    with VerticalScroll(id="result-content-panel"):
+                        yield Markdown(
+                            "# Select a file from the tree", id="result-content"
+                        )
+
+            def _build_tree(self, parent: TreeNode, path: Path) -> None:
+                for entry in sorted(path.iterdir()):
+                    if entry.is_dir():
+                        node = parent.add(entry.name, expand=False, data=entry)
+                        self._build_tree(node, entry)
+                    elif entry.suffix == ".md":
+                        parent.add_leaf(entry.name, data=entry)
+
+            def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+                """Handle file selection in tree."""
+                path = event.node.data
+                if path and path.is_file() and path.suffix == ".md":
+                    try:
+                        content = path.read_text()
+                        self.query_one("#result-content", Markdown).update(content)
+                    except Exception as e:
+                        self.query_one("#result-content", Markdown).update(
+                            f"Error reading file: {e}"
+                        )
+
+            async def action_dismiss(self, result=None) -> None:
+                self.dismiss()
+
+        await self.push_screen(ResultPreviewScreen(self.engine.run_dir))
+
+        # Open run directory automatically
+        import subprocess
+        import os
+
+        try:
+            if os.path.exists(self.engine.run_dir):
+                subprocess.Popen(
+                    ["xdg-open", str(self.engine.run_dir)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except:
+            pass
+
+        self.notify(
+            f"Execution complete! Run saved at: {self.engine.run_dir}", timeout=10
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""

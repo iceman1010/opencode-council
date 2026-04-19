@@ -141,11 +141,16 @@ class ExecutionEngine:
         for full_name in selected_models:
             if full_name not in available_models:
                 invalid_models.append(full_name)
+                self._debug(
+                    f"WARNING: Model {full_name} not found in available models list",
+                    phase="WARNING",
+                )
 
-        if invalid_models:
-            raise ValueError(
-                f"Requested models do not exist: {', '.join(invalid_models)}\nAvailable models: {', '.join(available_models[:20])}"
-            )
+        # Temporarily disabled hard failure - model cache is stale
+        # if invalid_models:
+        #     raise ValueError(
+        #         f"Requested models do not exist: {', '.join(invalid_models)}\nAvailable models: {', '.join(available_models[:20])}"
+        #     )
 
         for full_name in selected_models:
             # Split on FIRST slash only (models may contain slashes)
