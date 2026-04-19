@@ -1,6 +1,7 @@
 """Execution engine for running models in parallel."""
 
 import asyncio
+import json
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -286,17 +287,27 @@ class ExecutionEngine:
             self._debug(f"FAILED: {error_msg}", model=model_full, phase="ERROR")
             raise RuntimeError(error_msg)
 
+        import json
+
         # Collect final text output from json stream
         output_text = []
         for line in stdout.decode().splitlines():
             try:
-                import json
-
                 event = json.loads(line)
                 if event.get("type") == "text" and "text" in event.get("part", {}):
                     output_text.append(event["part"]["text"])
-            except:
-                pass
+            except (json.JSONDecodeError, ValueError) as e:
+                self._debug(f"JSON parse skipped line: {str(e)[:50]}", model=model_full)
+
+        # Fallback: if JSON parsing found nothing, use raw stdout
+        if not output_text:
+            raw_output = stdout.decode().strip()
+            if raw_output:
+                self._debug(
+                    f"Using raw stdout fallback ({len(raw_output)} bytes)",
+                    model=model_full,
+                )
+                output_text = [raw_output]
 
         # Write full output to the model directory
         if output_text:
@@ -396,8 +407,12 @@ class ExecutionEngine:
                         f"Commenting on {other_name}", model=full_name, phase="COMMENT"
                     )
                     try:
-                        other_tool, other_model = other_name.split("/", 1)
-                        other_safe_name = other_model.replace("/", "_")
+                        # Use full name with slashes replaced by underscores (matches directory structure)
+                        other_safe_name = other_name.replace("/", "_")
+                        other_tool = other_name.split("/")[0]
+                        other_model = other_name.split("/", 1)[
+                            1
+                        ]  # Everything after first slash
                         analysis_path = (
                             self.run_dir / other_tool / other_safe_name / "analysis.md"
                         )
@@ -405,10 +420,70 @@ class ExecutionEngine:
                             self.run_dir / other_tool / other_safe_name / "plan.md"
                         )
 
-                        other_analysis = (
-                            analysis_path.read_text() if analysis_path.exists() else ""
+                        # Properly check and verify files exist before reading
+                        if not analysis_path.exists():
+                            raise FileNotFoundError(
+                                f"Analysis file not found: {analysis_path}"
+                            )
+                        if not plan_path.exists():
+                            raise FileNotFoundError(f"Plan file not found: {plan_path}")
+
+                        analysis_size = analysis_path.stat().st_size
+                        plan_size = plan_path.stat().st_size
+
+                        if analysis_size == 0:
+                            self._debug(
+                                f"WARNING: Analysis file is empty: {analysis_path}",
+                                model=full_name,
+                                phase="WARNING",
+                            )
+                        if plan_size == 0:
+                            self._debug(
+                                f"WARNING: Plan file is empty: {plan_path}",
+                                model=full_name,
+                                phase="WARNING",
+                            )
+
+                        self._debug(
+                            f"Reading analysis ({analysis_size} bytes) from {analysis_path.name}",
+                            model=full_name,
+                            phase="COMMENT",
                         )
-                        other_plan = plan_path.read_text() if plan_path.exists() else ""
+                        self._debug(
+                            f"Reading plan ({plan_size} bytes) from {plan_path.name}",
+                            model=full_name,
+                            phase="COMMENT",
+                        )
+
+                        other_analysis = analysis_path.read_text()
+                        other_plan = plan_path.read_text()
+
+                        # Log what's being read
+                        self._debug(
+                            f"=== COMMENTARY INPUT BEGIN ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"other_model: {other_model}",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"other_analysis ({len(other_analysis)} chars):\n{other_analysis[:500]}",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"other_plan ({len(other_plan)} chars):\n{other_plan[:500]}",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"=== COMMENTARY INPUT END ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
 
                         # Replace slashes with hyphens to avoid subdirectories
                         safe_other_name = other_name.replace("/", "-")
@@ -417,6 +492,32 @@ class ExecutionEngine:
                             other_analysis=other_analysis,
                             other_plan=other_plan,
                             output_dir=f"{safe_other_name}.md",
+                        )
+
+                        # Log the full prompt being sent
+                        self._debug(
+                            f"=== PROMPT BEING SENT BEGIN ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        for i, line in enumerate(prompt.split("\n")):
+                            if i < 30:  # First 30 lines
+                                self._debug(
+                                    f"{line}",
+                                    model=full_name,
+                                    phase="DEBUG",
+                                )
+                            elif i == 30:
+                                self._debug(
+                                    f"... ({len(prompt.splitlines())} total lines)",
+                                    model=full_name,
+                                    phase="DEBUG",
+                                )
+                                break
+                        self._debug(
+                            f"=== PROMPT BEING SENT END ===",
+                            model=full_name,
+                            phase="DEBUG",
                         )
 
                         cmd = [execution.tool_name, "run"]
@@ -437,6 +538,26 @@ class ExecutionEngine:
                         )
 
                         self._debug(
+                            f"=== FULL COMMAND BEGIN ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"{' '.join(cmd)}",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"=== FULL COMMAND END ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
+                            f"Working directory: {commentary_dir}",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        self._debug(
                             f"Running commentary command for {other_name}",
                             model=full_name,
                             phase="EXECUTE",
@@ -451,6 +572,38 @@ class ExecutionEngine:
 
                         stdout, stderr = await process.communicate()
 
+                        # Log raw output for debugging
+                        stdout_decoded = stdout.decode()
+                        stderr_decoded = stderr.decode()
+                        self._debug(
+                            f"=== RAW STDOUT BEGIN ({len(stdout_decoded)} bytes) ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        for line in stdout_decoded.split("\n")[:20]:
+                            self._debug(
+                                f"{line[:200]}",
+                                model=full_name,
+                                phase="DEBUG",
+                            )
+                        if len(stdout_decoded.split("\n")) > 20:
+                            self._debug(
+                                f"... ({len(stdout_decoded.splitlines())} total lines)",
+                                model=full_name,
+                                phase="DEBUG",
+                            )
+                        self._debug(
+                            f"=== RAW STDOUT END ===",
+                            model=full_name,
+                            phase="DEBUG",
+                        )
+                        if stderr_decoded:
+                            self._debug(
+                                f"STDERR: {stderr_decoded[:500]}",
+                                model=full_name,
+                                phase="DEBUG",
+                            )
+
                         self._debug(
                             f"Commentary command completed for {other_name} with code {process.returncode}",
                             model=full_name,
@@ -461,19 +614,76 @@ class ExecutionEngine:
                             output_text = []
                             for line in stdout.decode().splitlines():
                                 try:
-                                    import json
-
                                     event = json.loads(line)
+                                    # Extract from text events
                                     if event.get(
                                         "type"
                                     ) == "text" and "text" in event.get("part", {}):
                                         output_text.append(event["part"]["text"])
-                                except:
-                                    pass
+                                    # Extract from write tool_use events (this is where the actual content often is!)
+                                    elif event.get("type") == "tool_use":
+                                        tool_part = event.get("part", {})
+                                        if (
+                                            tool_part.get("type") == "tool"
+                                            and tool_part.get("tool") == "write"
+                                        ):
+                                            # The write tool input contains the file content
+                                            tool_input = tool_part.get("input", {})
+                                            if isinstance(tool_input, dict):
+                                                content = tool_input.get("content", "")
+                                                if content:
+                                                    output_text.append(content)
+                                                    self._debug(
+                                                        f"Extracted content from write tool ({len(content)} chars)",
+                                                        model=full_name,
+                                                        phase="DEBUG",
+                                                    )
+                                except (json.JSONDecodeError, ValueError) as e:
+                                    self._debug(
+                                        f"JSON parse skipped: {str(e)[:50]}",
+                                        model=full_name,
+                                    )
+
+                            if not output_text:
+                                raw_output = stdout.decode().strip()
+                                if raw_output:
+                                    self._debug(
+                                        f"Using raw stdout fallback ({len(raw_output)} bytes)",
+                                        model=full_name,
+                                    )
+                                    output_text = [raw_output]
+
+                            self._debug(
+                                f"=== EXTRACTED OUTPUT ({len(output_text)} pieces, {sum(len(x) for x in output_text)} total chars) BEGIN ===",
+                                model=full_name,
+                                phase="DEBUG",
+                            )
+                            for i, piece in enumerate(output_text):
+                                self._debug(
+                                    f"[{i}] {piece[:200]}",
+                                    model=full_name,
+                                    phase="DEBUG",
+                                )
+                            self._debug(
+                                f"=== EXTRACTED OUTPUT END ===",
+                                model=full_name,
+                                phase="DEBUG",
+                            )
 
                             if output_text:
                                 comment_file = commentary_dir / f"{safe_other_name}.md"
-                                comment_file.write_text("\n".join(output_text))
+                                output_combined = "\n".join(output_text)
+                                # If the output is just a short confirmation, try reading the actual file
+                                if len(output_combined) < 100 and comment_file.exists():
+                                    actual_content = comment_file.read_text()
+                                    if len(actual_content) > len(output_combined):
+                                        self._debug(
+                                            f"Replacing short output ({len(output_combined)} chars) with actual file content ({len(actual_content)} chars)",
+                                            model=full_name,
+                                            phase="DEBUG",
+                                        )
+                                        output_combined = actual_content
+                                comment_file.write_text(output_combined)
                                 self._debug(
                                     f"Wrote commentary file for {other_name}",
                                     model=full_name,
