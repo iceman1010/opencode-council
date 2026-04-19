@@ -129,7 +129,8 @@ class CouncilConfig:
         for tool_name, tool in self.tools.items():
             if tool.enabled:
                 for model in tool.available_models:
-                    models.append((model, tool_name))
+                    full_name = f"{tool_name}/{model}"
+                    models.append((full_name, tool_name))
         return models
 
     def get_model_info(

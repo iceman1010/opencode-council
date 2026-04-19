@@ -72,7 +72,7 @@ class TaskInputPanel(Vertical):
         """Update run button when text changes."""
         app = self.app
         if app:
-            app.update_run_button()
+            app.update_run_button()  # type: ignore[attr-defined]
 
 
 class ModelSelectionPanel(Vertical):
@@ -119,7 +119,7 @@ class ModelSelectionPanel(Vertical):
         def on_change():
             app = self.app
             if app:
-                app.update_run_button()
+                app.update_run_button()  # type: ignore[attr-defined]
 
         for provider, tool_models in sorted(providers.items()):
             node = TreeNode(provider, id=f"node-{provider}")
@@ -217,7 +217,7 @@ class SettingsScreen(Screen):
         self.query_one(f"#tab-{tab}").remove_class("hidden-tab")
         for btn in self.query("SettingsScreen Button"):
             if btn.id and btn.id.startswith("tab-"):
-                btn.variant = "primary" if btn.id == f"tab-{tab}" else "default"
+                btn.variant = "primary" if btn.id == f"tab-{tab}" else "default"  # type: ignore[attr-defined]
 
     def save_settings(self) -> None:
         """Save settings."""
@@ -275,7 +275,7 @@ class SettingsScreen(Screen):
         elif event.key == " ":
             cb = self.focused
             if cb and hasattr(cb, "value"):
-                cb.value = not cb.value
+                cb.value = not cb.value  # type: ignore[attr-defined]
                 event.prevent_default()
 
     def _get_current_column_checkboxes(self) -> list:
@@ -309,17 +309,17 @@ class SettingsScreen(Screen):
             if checkbox.value:
                 enabled_tools.append(tool.name)
 
-        all_checkboxes = list(self.query("Checkbox"))
+        all_checkboxes = list(self.query(Checkbox))
         for cb in all_checkboxes:
             if cb.id:
                 if cb.id.startswith("hide-provider-"):
                     provider = cb.id.replace("hide-provider-", "")
-                    if cb.value:
+                    if cb.value:  # type: ignore[attr-defined]
                         hidden_providers.append(provider)
                 elif cb.id.startswith("hide-model-"):
                     model_id = cb.id.replace("hide-model-", "")
                     full_model = model_id.replace("_", "/")
-                    if cb.value:
+                    if cb.value:  # type: ignore[attr-defined]
                         hidden_models.append(full_model)
 
         return ToolPreferences(
@@ -349,11 +349,11 @@ class SettingsScreen(Screen):
 
     def reset_filters(self) -> None:
         """Reset all filters."""
-        for cb in self.query("Checkbox"):
+        for cb in self.query(Checkbox):
             if cb.id and (
                 cb.id.startswith("hide-provider-") or cb.id.startswith("hide-model-")
             ):
-                cb.value = False
+                cb.value = False  # type: ignore[attr-defined]
         self.app.notify("Filters reset")
 
     def verify_custom_tool(self) -> None:
@@ -408,8 +408,8 @@ class SettingsScreen(Screen):
         )
         self.config_manager.save(config)
 
-        self.query_one("#custom-command", TextArea).update("")
-        self.query_one("#custom-path", TextArea).update("")
+        self.query_one("#custom-command", TextArea).clear()
+        self.query_one("#custom-path", TextArea).clear()
         self.app.notify(f"Added custom tool: {cmd}")
 
     def compose(self) -> ComposeResult:
@@ -417,7 +417,7 @@ class SettingsScreen(Screen):
 
         if not config.tools:
             try:
-                app_config = self.app.config
+                app_config = self.app.config  # type: ignore[attr-defined]
                 if app_config and app_config.tools:
                     config.tools = app_config.tools
             except Exception:
@@ -883,9 +883,12 @@ class CouncilApp(App):
     def on_progress(self, model_name: str, status: ModelStatus) -> None:
         """Handle progress updates from execution engine."""
         if hasattr(self, "_execution_overlay") and self._execution_overlay:
-            self.call_from_thread(
-                self._execution_overlay.update_status, model_name, status
-            )
+            try:
+                self.call_later(
+                    self._execution_overlay.update_status, model_name, status
+                )
+            except RuntimeError:
+                pass  # App not running
 
     async def _refresh_ui(self) -> None:
         """Force UI refresh."""
@@ -926,6 +929,8 @@ class CouncilApp(App):
                 super().__init__(**kwargs)
                 self.engine = engine
                 self.model_rows = {}
+                self._time_timer = None
+                self._phase_tracker = {}
 
             def compose(self) -> ComposeResult:
                 with Vertical(id="execution-overlay"):
@@ -933,7 +938,10 @@ class CouncilApp(App):
                         "Running Models", id="overlay-title", classes="overlay-header"
                     )
                     yield Label(f"Task: {self.engine.task[:60]}...", id="overlay-task")
-                    yield ScrollableContainer(id="model-status-list")
+                    yield Static(" ", classes="spacer")
+                    yield ScrollableContainer(
+                        id="model-status-list", classes="model-status-container"
+                    )
                     with Horizontal(id="overlay-footer"):
                         yield Button(
                             "Cancel All", id="cancel-all-button", variant="error"
@@ -943,39 +951,137 @@ class CouncilApp(App):
             def on_mount(self) -> None:
                 container = self.query_one("#model-status-list", ScrollableContainer)
                 for model_name in self.engine.executions.keys():
+                    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", model_name)
+                    icon_label = Label(
+                        f"🔄 {model_name}",
+                        id=f"label-{safe_id}",
+                        classes="model-status-label",
+                    )
+                    phase_label = Label(
+                        "Phase: Waiting",
+                        id=f"phase-{safe_id}",
+                        classes="model-phase-label",
+                    )
+                    time_label = Label(
+                        "⏱ 0:00",
+                        id=f"time-{safe_id}",
+                        classes="model-time-label",
+                    )
+                    progress_bar = Static(
+                        "░░░░░░░░░░ 0%",
+                        id=f"progress-{safe_id}",
+                        classes="model-progress-bar",
+                    )
+                    cancel_btn = Button(
+                        "Cancel",
+                        id=f"cancel-{safe_id}",
+                        variant="warning",
+                        classes="model-cancel-btn",
+                    )
                     row = Horizontal(
-                        Label(
-                            f"🔄 {model_name}",
-                            id=f"label-{model_name.replace('/', '-').replace('.', '_').replace(':', '_')}",
-                            classes="model-status-label",
-                        ),
-                        Button(
-                            "Cancel",
-                            id=f"cancel-{model_name.replace('/', '-').replace('.', '_').replace(':', '_')}",
-                            variant="warning",
-                            classes="model-cancel-btn",
-                        ),
+                        icon_label,
+                        phase_label,
+                        time_label,
+                        progress_bar,
+                        cancel_btn,
                         classes="model-status-row",
                     )
                     container.mount(row)
-                    self.model_rows[model_name] = row
+                    self.model_rows[model_name] = {
+                        "row": row,
+                        "icon": icon_label,
+                        "phase": phase_label,
+                        "time": time_label,
+                        "progress": progress_bar,
+                        "button": cancel_btn,
+                    }
+                    self._phase_tracker[model_name] = None
+                self._time_timer = self.set_interval(1, self._update_times)
+
+            def _format_time(self, seconds: float) -> str:
+                """Format elapsed time as readable string."""
+                if seconds < 60:
+                    return f"⏱ {int(seconds)}:{(int(seconds) % 60):02d}"
+                elif seconds < 3600:
+                    mins = int(seconds // 60)
+                    secs = int(seconds % 60)
+                    return f"⏱ {mins}:{secs:02d}"
+                else:
+                    hrs = int(seconds // 3600)
+                    mins = int((seconds % 3600) // 60)
+                    secs = int(seconds % 60)
+                    return f"⏱ {hrs}:{mins:02d}:{secs:02d}"
+
+            def _get_phase(self, model_name: str, status: ModelStatus) -> str:
+                """Determine current phase based on status."""
+                if status in (
+                    ModelStatus.COMPLETE,
+                    ModelStatus.FAILED,
+                    ModelStatus.CANCELLED,
+                ):
+                    if status == ModelStatus.COMPLETE:
+                        return "Complete"
+                    elif status == ModelStatus.FAILED:
+                        return "Failed"
+                    else:
+                        return "Cancelled"
+
+                if status == ModelStatus.PENDING:
+                    return "Waiting"
+
+                if status == ModelStatus.RUNNING:
+                    prev = self._phase_tracker.get(model_name)
+                    if prev == ModelStatus.ANALYSIS_COMPLETE:
+                        return "Plan"
+                    elif prev == ModelStatus.PLAN_COMPLETE:
+                        return "Commentary"
+                    else:
+                        return "Analysis"
+
+                return "Waiting"
+
+            def _calculate_progress(self, model_name: str) -> int:
+                """Calculate progress percentage for a model based on overall completion."""
+                total = self.engine.get_total_count()
+                completed = self.engine.get_completed_count()
+                if total == 0:
+                    return 0
+
+                status = self.engine.get_status(model_name)
+                if status == ModelStatus.COMPLETE:
+                    return 100
+                elif status == ModelStatus.FAILED:
+                    return 100
+
+                base_completed = completed - (1 if status == ModelStatus.RUNNING else 0)
+                total_slots = total
+                progress = int((base_completed / total_slots) * 100)
+                return min(progress, 99)
+
+            def _update_times(self) -> None:
+                """Update elapsed times and progress bars."""
+                for model_name in self.model_rows:
+                    row = self.model_rows[model_name]
+                    elapsed = self.engine.get_elapsed_time(model_name)
+                    row["time"].update(self._format_time(elapsed))
+
+                    progress = self._calculate_progress(model_name)
+                    bar_len = 10
+                    filled = int((progress / 100) * bar_len)
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    row["progress"].update(f"{bar} {progress}%")
+                self.refresh()
 
             def update_status(self, model_name: str, status: ModelStatus) -> None:
                 """Update status display for a model."""
                 if model_name not in self.model_rows:
                     return
 
-                safe_id = (
-                    model_name.replace("/", "-").replace(".", "_").replace(":", "_")
-                )
-                label = self.model_rows[model_name].query_one(
-                    f"#label-{safe_id}", Label
-                )
-                btn = self.model_rows[model_name].query_one(
-                    f"#cancel-{safe_id}", Button
-                )
+                row = self.model_rows[model_name]
+                prev_status = self._phase_tracker.get(model_name)
+                self._phase_tracker[model_name] = status
 
-                status_icons = {
+                valid_statuses = {
                     ModelStatus.PENDING: "⏳",
                     ModelStatus.RUNNING: "🔄",
                     ModelStatus.ANALYSIS_COMPLETE: "✅",
@@ -984,15 +1090,30 @@ class CouncilApp(App):
                     ModelStatus.FAILED: "❌",
                     ModelStatus.CANCELLED: "🚫",
                 }
-                icon = status_icons.get(status, "⏳")
-                label.update(f"{icon} {model_name}")
+                icon = valid_statuses.get(status, "⏳")
+                row["icon"].update(f"{icon} {model_name}")
+
+                phase = self._get_phase(model_name, status)
+                row["phase"].update(f"Phase: {phase}")
 
                 if status in (ModelStatus.RUNNING, ModelStatus.PENDING):
-                    btn.disabled = False
+                    row["button"].disabled = False
                 else:
-                    btn.disabled = True
+                    row["button"].disabled = True
+
+                progress = self._calculate_progress(model_name)
+                bar_len = 10
+                filled = int((progress / 100) * bar_len)
+                bar = "█" * filled + "░" * (bar_len - filled)
+                row["progress"].update(f"{bar} {progress}%")
 
                 self.refresh()
+
+            def on_unmount(self) -> None:
+                """Clean up timer when overlay is dismissed."""
+                if self._time_timer:
+                    self._time_timer.stop()
+                self._time_timer = None
 
             def on_button_pressed(self, event: Button.Pressed) -> None:
                 if event.button.id == "cancel-all-button":

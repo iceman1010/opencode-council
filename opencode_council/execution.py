@@ -129,23 +129,9 @@ class ExecutionEngine:
     def prepare_models(self, selected_models: list[str]) -> None:
         """Prepare model executions."""
         self.executions = {}
-        available_models = [full_name for full_name, _ in self.config.get_all_models()]
 
-        # Validate all requested models exist first
-        invalid_models = []
-        for full_name in selected_models:
-            if full_name not in available_models:
-                invalid_models.append(full_name)
-                self._debug(
-                    f"WARNING: Model {full_name} not found in available models list",
-                    phase="WARNING",
-                )
-
-        # Temporarily disabled hard failure - model cache is stale
-        # if invalid_models:
-        #     raise ValueError(
-        #         f"Requested models do not exist: {', '.join(invalid_models)}\nAvailable models: {', '.join(available_models[:20])}"
-        #     )
+        # Skip model validation against stale cache - user's selection is authoritative
+        # The available_models cache may be outdated, but the tools will report actual errors
 
         for full_name in selected_models:
             # Get tool name (first part), keep full model name for CLI
@@ -280,24 +266,72 @@ class ExecutionEngine:
             self._debug(f"FAILED: {error_msg}", model=model_full, phase="ERROR")
             raise RuntimeError(error_msg)
 
+        # Also check stderr for error indicators even if returncode is 0
+        if stderr:
+            stderr_text = stderr.decode().lower()
+            error_indicators = [
+                "error",
+                "failed",
+                "exception",
+                "not found",
+                "provider model not found",
+            ]
+            for indicator in error_indicators:
+                if indicator in stderr_text:
+                    # Check if it's not just a warning
+                    lines = stderr.decode().splitlines()
+                    has_error = any(
+                        indicator in line.lower() and "warning" not in line.lower()
+                        for line in lines[:5]  # Check first few lines
+                    )
+                    if has_error:
+                        error_msg = stderr.decode()[:500]
+                        self._debug(
+                            f"FAILED: {error_msg}", model=model_full, phase="ERROR"
+                        )
+                        raise RuntimeError(f"Model error: {error_msg[:200]}")
+
         import json
 
-        # Try JSON extraction first
-        output_text = []
+        # Parse JSONLines format and extract human-readable text
+        human_readable_text = []
         for line in stdout.decode().splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
                 event = json.loads(line)
-                if event.get("type") == "text" and "text" in event.get("part", {}):
-                    output_text.append(event["part"]["text"])
-            except (json.JSONDecodeError, ValueError) as e:
-                pass  # Skip parse errors
+                event_type = event.get("type", "")
 
-        # Default: just use ALL raw stdout since models now return text instead of creating files
-        raw_output = stdout.decode().strip()
-        if raw_output:
-            output_text = [raw_output]
+                # Extract text content from text events
+                if event_type == "text":
+                    text_content = event.get("part", {}).get("text", "")
+                    if text_content:
+                        human_readable_text.append(text_content)
 
-        # Write full output to the model directory
+                # Extract final message content from step_finish events
+                elif event_type == "step_finish":
+                    # Step finish might contain summary info, but usually the text is already in "text" events
+                    pass
+
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                # If not valid JSON, treat as raw text (fallback)
+                if line:
+                    # Only use non-JSON lines as fallback if we haven't found any JSON text
+                    pass
+
+        # If we found human-readable text, use it; otherwise use raw output
+        if human_readable_text:
+            output_text = human_readable_text
+        else:
+            # Fallback: use raw output but try to clean it up
+            raw_output = stdout.decode().strip()
+            if raw_output:
+                output_text = [raw_output]
+            else:
+                output_text = []
+
+        # Write extracted text to the model directory
         if output_text:
             # Check for plan FIRST since plan template also contains "analysis"
             if "plan" in prompt_template.lower():
@@ -307,7 +341,7 @@ class ExecutionEngine:
             else:
                 out_file = output_dir / "output.md"
 
-            out_file.write_text("\n".join(output_text))
+            out_file.write_text("\n\n".join(output_text))
 
     async def run_commentary_phase(self) -> None:
         """Run commentary phase - each model reviews other models."""
