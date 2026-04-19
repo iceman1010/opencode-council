@@ -44,15 +44,13 @@ ANALYSIS_PROMPT_TEMPLATE = """Analyze the following task and provide a detailed 
 
 Task: {task}
 
-Write your analysis to: {output_dir}/analysis.md"""
+Write your analysis as OUTPUT (do NOT create any files):"""
 
-PLAN_PROMPT_TEMPLATE = """Based on your analysis, provide a solution or implementation plan.
+PLAN_PROMPT_TEMPLATE = """Based on your analysis, provide a solution or implementation plan as OUTPUT (do NOT create any files).
 
-Task: {task}
+Task: {task}"""
 
-Write your plan to: {output_dir}/plan.md"""
-
-COMMENTARY_PROMPT_TEMPLATE = """Review the following work from another model and provide commentary:
+COMMENTARY_PROMPT_TEMPLATE = """Review the following work from another model and provide commentary.
 
 Model: {other_model}
 Analysis:
@@ -61,12 +59,10 @@ Analysis:
 Solution/Plan:
 {other_plan}
 
-Provide:
+Provide your commentary as OUTPUT (do NOT create any files):
 1. Commentary on their analysis
 2. Commentary on their solution
-3. Comparison with your own approach
-
-Write to: {output_dir}"""
+3. Comparison with your own approach"""
 
 
 class ExecutionEngine:
@@ -227,10 +223,9 @@ class ExecutionEngine:
         output_dir = self.run_dir / execution.tool_name / safe_model_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Always pass relative paths to LLMs so they write files correctly inside their directory
+        # Prompt no longer needs output_dir - model returns text, we write files
         prompt = prompt_template.format(
             task=self.task,
-            output_dir=".",
         )
 
         # Add auto-approve flags for each tool
@@ -289,7 +284,7 @@ class ExecutionEngine:
 
         import json
 
-        # Collect final text output from json stream
+        # Try JSON extraction first
         output_text = []
         for line in stdout.decode().splitlines():
             try:
@@ -297,24 +292,20 @@ class ExecutionEngine:
                 if event.get("type") == "text" and "text" in event.get("part", {}):
                     output_text.append(event["part"]["text"])
             except (json.JSONDecodeError, ValueError) as e:
-                self._debug(f"JSON parse skipped line: {str(e)[:50]}", model=model_full)
+                pass  # Skip parse errors
 
-        # Fallback: if JSON parsing found nothing, use raw stdout
-        if not output_text:
-            raw_output = stdout.decode().strip()
-            if raw_output:
-                self._debug(
-                    f"Using raw stdout fallback ({len(raw_output)} bytes)",
-                    model=model_full,
-                )
-                output_text = [raw_output]
+        # Default: just use ALL raw stdout since models now return text instead of creating files
+        raw_output = stdout.decode().strip()
+        if raw_output:
+            output_text = [raw_output]
 
         # Write full output to the model directory
         if output_text:
-            if "analysis" in prompt_template.lower():
-                out_file = output_dir / "analysis.md"
-            elif "plan" in prompt_template.lower():
+            # Check for plan FIRST since plan template also contains "analysis"
+            if "plan" in prompt_template.lower():
                 out_file = output_dir / "plan.md"
+            elif "analysis" in prompt_template.lower():
+                out_file = output_dir / "analysis.md"
             else:
                 out_file = output_dir / "output.md"
 
@@ -491,7 +482,6 @@ class ExecutionEngine:
                             other_model=other_model,
                             other_analysis=other_analysis,
                             other_plan=other_plan,
-                            output_dir=f"{safe_other_name}.md",
                         )
 
                         # Log the full prompt being sent
