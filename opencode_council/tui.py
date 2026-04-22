@@ -92,6 +92,9 @@ class ModelSelectionPanel(Vertical):
     def update_models(self, tools: dict) -> None:
         """Update the model list."""
         model_list = self.query_one("#model-list", Vertical)
+        # Remove existing checkboxes to avoid duplicate ID errors
+        for checkbox in self.query(ModelCheckBox):
+            checkbox.remove()
         model_list.remove_children()
         self.tree_nodes = []
         self.all_checkboxes = []
@@ -132,13 +135,27 @@ class ModelSelectionPanel(Vertical):
                     model = (model or "").strip()
                     if not model:
                         continue
-                    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{provider}_{model}")
+                    # Extract display name and full model name
+                    if "/" in model:
+                        # model is like "zai-coding-plan/glm-5.1"
+                        provider_prefix = model.split("/")[0]
+                        display_name = model.split("/", 1)[1]  # "glm-5.1"
+                        full_model_name = model  # "zai-coding-plan/glm-5.1"
+                    else:
+                        provider_prefix = ""
+                        display_name = model
+                        full_model_name = model
+                    safe_id = re.sub(
+                        r"[^a-zA-Z0-9_-]",
+                        "_",
+                        f"{tool_name}_{provider_prefix}_{display_name}",
+                    )
                     checkbox = ModelCheckBox(
-                        model,
+                        full_model_name,  # Store full model name for execution
                         tool_name,
                         on_change=on_change,
                         id=f"checkbox-{safe_id}",
-                        label=f"  {tool_icon} {model}",
+                        label=f"  {tool_icon} {display_name}",
                     )
                     self.all_checkboxes.append(checkbox)
                     model_list.mount(checkbox)

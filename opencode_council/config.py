@@ -125,12 +125,22 @@ class CouncilConfig:
 
         Returns list of (full_model_name, tool_name) tuples.
         """
+        # Build actual model->tool mapping from discovered tools
+        actual_tool_for_model = {}
+        for tool_name, tool in self.tools.items():
+            if tool.enabled:
+                for model in tool.available_models:
+                    actual_tool_for_model[model] = tool_name
+
         models = []
         for tool_name, tool in self.tools.items():
             if tool.enabled:
                 for model in tool.available_models:
-                    full_name = f"{tool_name}/{model}"
-                    models.append((full_name, tool_name))
+                    # Use the actual tool from discovery for this model
+                    actual_tool = actual_tool_for_model[model]
+                    # Model string already has tool/model format (e.g., "google/gemini-1.5-flash")
+                    full_name = model
+                    models.append((full_name, actual_tool))
         return models
 
     def get_model_info(

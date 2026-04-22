@@ -29,7 +29,8 @@ class ModelExecution:
     """Represents a single model execution."""
 
     tool_name: str
-    model_name: str
+    model_name: str  # Just the model part (e.g., "gemini-1.5-flash")
+    original_model: str = ""  # Full original name (e.g., "google/gemini-1.5-flash")
     status: ModelStatus = ModelStatus.PENDING
     start_time: Optional[float] = None
     end_time: Optional[float] = None
@@ -130,19 +131,72 @@ class ExecutionEngine:
         """Prepare model executions."""
         self.executions = {}
 
-        # Skip model validation against stale cache - user's selection is authoritative
-        # The available_models cache may be outdated, but the tools will report actual errors
+        # Get all available models from config
+        available_models = {
+            full_name: tool_name
+            for full_name, tool_name in self.config.get_all_models()
+        }
+
+        # Validate all requested models against available models
+        # Normalize selected model names to match available_models keys
+        invalid_models = []
+        normalized_selected = []
+        for full_name in selected_models:
+            original_name = full_name
+            # If model has tool prefix that doesn't match available_models,
+            # try to find the correct version by replacing the prefix
+            if full_name not in available_models:
+                parts = full_name.split("/", 1)
+                if len(parts) == 2:
+                    _, model_only = parts
+                    # Check if this model exists with a different tool prefix
+                    for available_key in available_models:
+                        if available_key.split("/", 1)[1] == model_only:
+                            full_name = available_key
+                            break
+
+            if full_name not in available_models:
+                invalid_models.append(original_name)
+                self._debug(
+                    f"Model '{original_name}' not found in available models",
+                    phase="ERROR",
+                )
+            else:
+                normalized_selected.append(full_name)
+
+        # Update selected_models to use normalized names
+        selected_models[:] = normalized_selected
+
+        # Raise error if any models are invalid - this prevents wasting time running invalid models
+        if invalid_models:
+            available_list = ", ".join(sorted(available_models.keys())[:20])
+            raise ValueError(
+                f"Invalid model(s): {', '.join(invalid_models)}\n"
+                f"Available models: {available_list}"
+            )
 
         for full_name in selected_models:
-            # Get tool name (first part), keep full model name for CLI
-            tool_name = full_name.split("/")[0]
-            model_name = full_name  # Keep full name like "kilo/kilo-auto/free"
-            # Create unique directory for each full model name (replace slashes)
-            safe_model_name = model_name.replace("/", "_")
+            tool_name = available_models[full_name]
+            # full_name may have tool prefix duplicated (e.g., "opencode/opencode/big-pickle")
+            # Extract clean model part
+            if full_name.startswith(f"{tool_name}/{tool_name}/"):
+                # Strip duplicate prefix
+                model_part = full_name[len(f"{tool_name}/{tool_name}/") :]
+            else:
+                # Normal case: "tool/model"
+                model_part = (
+                    full_name.split("/", 1)[1] if "/" in full_name else full_name
+                )
+            safe_model_name = model_part.replace("/", "_")
             model_dir = self.run_dir / tool_name / safe_model_name
             model_dir.mkdir(parents=True, exist_ok=True)
             self.executions[full_name] = ModelExecution(
-                tool_name=tool_name, model_name=model_name
+                tool_name=tool_name,
+                model_name=model_part,
+                original_model=full_name,  # Store full original model name
+            )
+            self._debug(
+                f"Prepared execution: full={full_name}, tool={tool_name}, model_part={model_part}"
             )
 
     async def run_analysis_phase(self) -> None:
@@ -223,14 +277,17 @@ class ExecutionEngine:
         cmd.extend(
             [
                 "--model",
-                execution.model_name,
+                execution.original_model
+                or f"{execution.tool_name}/{execution.model_name}",
                 "--format",
                 "json",
                 prompt,
             ]
         )
 
-        model_full = f"{execution.tool_name}/{execution.model_name}"
+        model_full = (
+            execution.original_model or f"{execution.tool_name}/{execution.model_name}"
+        )
         self._debug(
             f"Executing command: {' '.join(cmd)}", model=model_full, phase="EXECUTE"
         )
