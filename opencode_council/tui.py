@@ -625,10 +625,11 @@ class CouncilApp(App):
     #panels .left-panel { width: 1fr; }
     #panels .right-panel { width: 1fr; }
     .panel { border: solid $primary; padding: 1 1; }
+    .panel:focus-within { border: solid $accent; }
     .left-panel { margin-right: 1; }
     .right-panel { margin-left: 1; }
     .panel-label { text-style: bold; color: $primary; }
-    #task-input { height: 100%; border: solid $accent; }
+    #task-input { height: 100%; border: solid $primary; }
     #model-list { height: 100%; layout: vertical; overflow-y: auto; }
     #run-bar { layout: horizontal; align: center middle; background: $surface; height: 3; }
     #run-bar Label { margin: 0 4; }
@@ -699,6 +700,72 @@ class CouncilApp(App):
         padding: 1 2;
     }
     CacheRebuildScreen .panel-label { text-style: bold; color: $accent; margin-bottom: 1; }
+
+    ExecutionOverlay {
+        align: center middle;
+    }
+    ExecutionOverlay #execution-overlay {
+        width: 80;
+        max-height: 90%;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+    ExecutionOverlay .overlay-header {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    ExecutionOverlay #overlay-task {
+        color: $text-muted;
+        margin-bottom: 1;
+        height: auto;
+    }
+    ExecutionOverlay .spacer {
+        height: 1;
+    }
+    ExecutionOverlay .model-status-container {
+        height: auto;
+        max-height: 20;
+        layout: vertical;
+        overflow-y: auto;
+    }
+    ExecutionOverlay .model-status-row {
+        layout: horizontal;
+        height: 3;
+        align: left middle;
+    }
+    ExecutionOverlay .model-status-label {
+        width: 24;
+        content-align: left middle;
+    }
+    ExecutionOverlay .model-phase-label {
+        width: 16;
+        content-align: left middle;
+        color: $accent;
+    }
+    ExecutionOverlay .model-time-label {
+        width: 8;
+        content-align: center middle;
+    }
+    ExecutionOverlay .model-progress-bar {
+        width: 14;
+        content-align: center middle;
+    }
+    ExecutionOverlay .model-cancel-btn {
+        width: 10;
+        margin-left: 1;
+    }
+    ExecutionOverlay #overlay-footer {
+        layout: horizontal;
+        height: 3;
+        margin-top: 1;
+        align: center middle;
+    }
+    ExecutionOverlay #overlay-help {
+        color: $text-muted;
+        margin-left: 2;
+    }
     """
 
     SCREENS = {
@@ -853,19 +920,16 @@ class CouncilApp(App):
         elif event.key == "up":
             if self.focus_mode == "models":
                 model_panel.move_selection(-1)
+                event.prevent_default()
             elif self.focus_mode == "run":
                 self.focus_mode = "models"
                 if model_panel.all_checkboxes:
                     model_panel.all_checkboxes[0].focus()
-            event.prevent_default()
+                event.prevent_default()
         elif event.key == "down":
             if self.focus_mode == "models":
                 model_panel.move_selection(1)
-            elif self.focus_mode == "task":
-                self.focus_mode = "models"
-                if model_panel.all_checkboxes:
-                    model_panel.all_checkboxes[0].focus()
-            event.prevent_default()
+                event.prevent_default()
         elif self.focus_mode == "run" and event.key == "enter":
             run_button = self.query_one("#run-button", Button)
             if not run_button.disabled:
@@ -1017,17 +1081,15 @@ class CouncilApp(App):
 
             def _format_time(self, seconds: float) -> str:
                 """Format elapsed time as readable string."""
-                if seconds < 60:
-                    return f"⏱ {int(seconds)}:{(int(seconds) % 60):02d}"
-                elif seconds < 3600:
-                    mins = int(seconds // 60)
-                    secs = int(seconds % 60)
-                    return f"⏱ {mins}:{secs:02d}"
-                else:
-                    hrs = int(seconds // 3600)
-                    mins = int((seconds % 3600) // 60)
-                    secs = int(seconds % 60)
+                total_secs = int(seconds)
+                if total_secs < 0:
+                    total_secs = 0
+                hrs = total_secs // 3600
+                mins = (total_secs % 3600) // 60
+                secs = total_secs % 60
+                if hrs > 0:
                     return f"⏱ {hrs}:{mins:02d}:{secs:02d}"
+                return f"⏱ {mins}:{secs:02d}"
 
             def _get_phase(self, model_name: str, status: ModelStatus) -> str:
                 """Determine current phase based on status."""
