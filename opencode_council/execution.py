@@ -35,6 +35,7 @@ class ModelExecution:
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     error: Optional[str] = None
+    process: Optional[asyncio.subprocess.Process] = None
 
 
 ANALYSIS_PROMPT_TEMPLATE = """Analyze the following task and provide a detailed analysis:
@@ -300,6 +301,9 @@ class ExecutionEngine:
             cwd=output_dir,
         )
 
+        # Store process handle for potential killing
+        execution.process = process
+
         stdout, stderr = await process.communicate()
 
         self._debug(f"Process exited with code: {process.returncode}", model=model_full)
@@ -487,12 +491,16 @@ class ExecutionEngine:
                         f"Commenting on {other_name}", model=full_name, phase="COMMENT"
                     )
                     try:
-                        # Use full name with slashes replaced by underscores (matches directory structure)
-                        other_safe_name = other_name.replace("/", "_")
-                        other_tool = other_name.split("/")[0]
-                        other_model = other_name.split("/", 1)[
-                            1
-                        ]  # Everything after first slash
+                        # Reuse stored execution data instead of re-parsing the name
+                        other_exec = self.executions.get(other_name)
+                        if not other_exec:
+                            raise FileNotFoundError(
+                                f"Execution not found: {other_name}"
+                            )
+
+                        other_tool = other_exec.tool_name
+                        other_safe_name = other_exec.model_name.replace("/", "_")
+
                         analysis_path = (
                             self.run_dir / other_tool / other_safe_name / "analysis.md"
                         )
@@ -648,6 +656,9 @@ class ExecutionEngine:
                             stderr=asyncio.subprocess.PIPE,
                             cwd=commentary_dir,
                         )
+
+                        # Store process handle for potential killing
+                        execution.process = process
 
                         stdout, stderr = await process.communicate()
 
@@ -874,13 +885,26 @@ class ExecutionEngine:
         """Cancel a single running model."""
         self._cancelled_models.add(model_name)
         if model_name in self.executions:
-            self.executions[model_name].status = ModelStatus.CANCELLED
+            execution = self.executions[model_name]
+            # Actually kill the subprocess if it's still running
+            if execution.process and execution.process.returncode is None:
+                try:
+                    execution.process.kill()
+                except ProcessLookupError:
+                    pass  # Process already dead
+            execution.status = ModelStatus.CANCELLED
             self._notify_progress(model_name, ModelStatus.CANCELLED)
 
     def cancel_all(self) -> None:
         """Cancel all running models."""
         self._cancelled_global = True
         for model_name in self.executions:
+            execution = self.executions.get(model_name)
+            if execution and execution.process and execution.process.returncode is None:
+                try:
+                    execution.process.kill()
+                except ProcessLookupError:
+                    pass
             self.cancel_model(model_name)
 
     def get_failed_models(self) -> list[tuple[str, str]]:
@@ -898,3 +922,26 @@ class ExecutionEngine:
             for name, exec in self.executions.items()
             if exec.status == ModelStatus.COMPLETE
         ]
+
+    def abort_stuck_and_proceed(self) -> int:
+        """Kill non-terminal models, allowing completed ones to proceed.
+        
+        Returns the count of models that were aborted.
+        """
+        killed = 0
+        terminal_states = (ModelStatus.COMPLETE, ModelStatus.FAILED, ModelStatus.CANCELLED)
+        
+        for name, execution in self.executions.items():
+            if execution.status not in terminal_states:
+                # Actually kill the subprocess if it's still running
+                if execution.process and execution.process.returncode is None:
+                    try:
+                        execution.process.kill()
+                    except ProcessLookupError:
+                        pass  # Process already dead
+                
+                execution.status = ModelStatus.CANCELLED
+                self._notify_progress(name, ModelStatus.CANCELLED)
+                killed += 1
+        
+        return killed

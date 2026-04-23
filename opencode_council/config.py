@@ -4,9 +4,9 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from opencode_council.tools import DiscoveredTool, ToolDiscovery
+from opencode_council.tools import DiscoveredTool, ToolDiscovery, has_cache_file, is_cache_valid
 
 
 @dataclass
@@ -168,9 +168,21 @@ class CouncilConfig:
 class ConfigManager:
     """Manages configuration persistence."""
 
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(
+        self,
+        config_path: Optional[Path] = None,
+        cache_strategy: str = "auto",
+    ):
+        """
+        Args:
+            config_path: Path to configuration file
+            cache_strategy: "auto" (validate first, rebuild if expired),
+                            "force" (always rebuild),
+                            "prefer_cached" (use cached if available, never rebuild)
+        """
         self.config_path = config_path or Path("council/config.json")
         self.config: Optional[CouncilConfig] = None
+        self.cache_strategy = cache_strategy
 
     def load(self) -> CouncilConfig:
         """Load configuration from file."""
@@ -184,9 +196,16 @@ class ConfigManager:
         else:
             self.config = self._create_default()
 
-        # Always refresh models if none found
+        # Handle cache strategy for tools discovery
         if not self.config.tools:
-            self.config = self._create_default()
+            if self.cache_strategy == "prefer_cached":
+                if has_cache_file():
+                    discovery = ToolDiscovery()
+                    self.config.tools = discovery.load_cached()
+                else:
+                    self.config = self._create_default()
+            else:
+                self.config = self._create_default()
 
         return self.config
 

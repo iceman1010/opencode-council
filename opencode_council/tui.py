@@ -9,7 +9,7 @@ from typing import Optional
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -148,7 +148,7 @@ class ModelSelectionPanel(Vertical):
                     safe_id = re.sub(
                         r"[^a-zA-Z0-9_-]",
                         "_",
-                        f"{tool_name}_{provider_prefix}_{display_name}",
+                        f"{tool_name}_{provider}_{full_model_name}",
                     )
                     checkbox = ModelCheckBox(
                         full_model_name,  # Store full model name for execution
@@ -685,6 +685,7 @@ class CouncilApp(App):
 
     CacheRebuildScreen {
         layers: overlay;
+        background: black 60%;
     }
     CacheRebuildScreen #cache-rebuild-wrapper {
         width: 100%;
@@ -787,13 +788,14 @@ class CouncilApp(App):
         else:
             self.push_screen(ConfirmQuitScreen())
 
-    def __init__(self):
+    def __init__(self, skip_cache_rebuild: bool = False):
         super().__init__()
         self.config: Optional[CouncilConfig] = None
         self.run_dir: Optional[Path] = None
         self.engine: Optional[ExecutionEngine] = None
         self.focus_mode: str = "task"
         self.config_manager = ConfigManager()
+        self.skip_cache_rebuild = skip_cache_rebuild
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -810,7 +812,7 @@ class CouncilApp(App):
 
     def on_mount(self) -> None:
         """Initialize on mount."""
-        self.refresh_models()
+        self.set_timer(0.1, self.refresh_models)
         self.query_one("#task-input").focus()
 
     @work(exclusive=True)
@@ -820,6 +822,14 @@ class CouncilApp(App):
         cache_ttl = getattr(config, "cache_ttl", 60)
         cache_ttl_seconds = cache_ttl * 60 if cache_ttl else 3600
 
+        if self.skip_cache_rebuild:
+            discovery = ToolDiscovery()
+            tools = discovery.load_cached()
+            if not tools:
+                tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
+            self._apply_tools(config, tools)
+            return
+
         if is_cache_valid(cache_ttl_seconds):
             discovery = ToolDiscovery()
             tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
@@ -828,14 +838,15 @@ class CouncilApp(App):
 
         if has_cache_file():
             modal = CacheRebuildScreen(show_use_old_cache=True)
-            await self.push_screen(modal)
+            self.push_screen(modal)
 
-            # Yield control to event loop to ensure modal renders before starting rebuild
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
 
             def do_rebuild():
                 discovery = ToolDiscovery()
-                tools = discovery.discover_all(cache_ttl=cache_ttl_seconds)
+                tools = discovery.discover_all(
+                    cache_ttl_seconds, abort_flag=modal.abort_flag
+                )
                 self.call_from_thread(self._on_rebuild_complete, config, tools, modal)
 
             thread = threading.Thread(target=do_rebuild, daemon=True)
@@ -846,8 +857,7 @@ class CouncilApp(App):
     def _on_rebuild_complete(self, config, tools, modal) -> None:
         """Called from background thread when rebuild completes."""
         if modal._use_old_cache:
-            discovery = ToolDiscovery()
-            tools = discovery.load_cached()
+            return
         self._apply_tools(config, tools)
         if modal in self.screen_stack:
             self.pop_screen()
@@ -855,10 +865,9 @@ class CouncilApp(App):
     async def _do_rebuild(self, config, cache_ttl_seconds: int) -> None:
         """Run cache rebuild in executor and show modal without old cache option."""
         modal = CacheRebuildScreen(show_use_old_cache=False)
-        await self.push_screen(modal)
+        self.push_screen(modal)
 
-        # Yield control to event loop to ensure modal renders before starting rebuild
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
 
         def do_rebuild():
             discovery = ToolDiscovery()
@@ -1004,6 +1013,7 @@ class CouncilApp(App):
             BINDINGS = [
                 ("escape", "cancel", "Cancel All"),
                 ("q", "cancel", "Cancel All"),
+                ("s", "skip_stuck", "Skip Stuck"),
             ]
 
             def __init__(self, engine: ExecutionEngine, **kwargs):
@@ -1025,9 +1035,12 @@ class CouncilApp(App):
                     )
                     with Horizontal(id="overlay-footer"):
                         yield Button(
+                            "Skip Stuck", id="skip-stuck-button", variant="warning"
+                        )
+                        yield Button(
                             "Cancel All", id="cancel-all-button", variant="error"
                         )
-                        yield Label("ESC / q = Cancel All", id="overlay-help")
+                        yield Label("s = Skip Stuck | ESC / q = Cancel All", id="overlay-help")
 
             def on_mount(self) -> None:
                 container = self.query_one("#model-status-list", ScrollableContainer)
@@ -1198,6 +1211,9 @@ class CouncilApp(App):
                 if event.button.id == "cancel-all-button":
                     self.engine.cancel_all()
                     self.dismiss()
+                elif event.button.id == "skip-stuck-button":
+                    killed = self.engine.abort_stuck_and_proceed()
+                    self.notify(f"Skipped {killed} stuck model(s)")
                 elif event.button.id and event.button.id.startswith("cancel-"):
                     model_name = event.button.id[7:]
                     self.engine.cancel_model(model_name)
@@ -1206,6 +1222,10 @@ class CouncilApp(App):
             def action_cancel(self) -> None:
                 self.engine.cancel_all()
                 self.dismiss()
+
+            def action_skip_stuck(self) -> None:
+                killed = self.engine.abort_stuck_and_proceed()
+                self.notify(f"Skipped {killed} stuck model(s)")
 
         self._execution_overlay = ExecutionOverlay(self.engine)
         await self.push_screen(self._execution_overlay)
@@ -1299,9 +1319,9 @@ class CouncilApp(App):
             self.action_run()
 
 
-def run_app() -> None:
+def run_app(skip_cache_rebuild: bool = False) -> None:
     """Run the TUI application."""
-    app = CouncilApp()
+    app = CouncilApp(skip_cache_rebuild=skip_cache_rebuild)
     app.run()
 
 

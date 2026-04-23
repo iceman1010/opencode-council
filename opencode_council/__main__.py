@@ -30,6 +30,11 @@ def main():
         help="Clear and rebuild tool cache then exit",
     )
     parser.add_argument(
+        "--use-stale-cache",
+        action="store_true",
+        help="Use existing cache even if expired (skip rebuild)",
+    )
+    parser.add_argument(
         "--version", "-v", action="store_true", help="Show version number and exit"
     )
 
@@ -107,10 +112,18 @@ def main():
             asyncio.run(run())
             return
 
-        # Only import TUI when actually needed
         from opencode_council.tui import run_app
 
-        run_app()
+        if args.use_stale_cache:
+            from opencode_council.tools import ToolDiscovery
+            discovery = ToolDiscovery()
+            tools = discovery.discover_all(use_expired=True)
+            print(f"Using stale cache with {len(tools)} tools")
+            for tool_name, tool in tools.items():
+                print(f"  - {tool_name}: {len(tool.available_models)} models")
+            run_app(skip_cache_rebuild=True)
+        else:
+            run_app()
 
     except Exception as e:
         with open("/tmp/opencode_council_error.log", "w") as f:

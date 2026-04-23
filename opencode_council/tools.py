@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,10 +130,16 @@ class ToolDiscovery:
         return self.tools
 
     def discover_all(
-        self, cache_ttl: Optional[int] = None
+        self,
+        cache_ttl: Optional[int] = None,
+        use_expired: bool = False,
+        abort_flag: Optional[threading.Event] = None,
     ) -> dict[str, DiscoveredTool]:
         """Discover all known opencode-compatible tools."""
-        cached = _load_cache(cache_ttl)
+        if use_expired:
+            cached = _load_expired_cache()
+        else:
+            cached = _load_cache(cache_ttl)
         if cached:
             for name, data in cached.items():
                 tool = DiscoveredTool(
@@ -149,7 +156,9 @@ class ToolDiscovery:
 
         self.tools = {}
         for tool_name in KNOWN_TOOLS:
-            tool = self.discover_tool(tool_name)
+            if abort_flag and abort_flag.is_set():
+                break
+            tool = self.discover_tool(tool_name, abort_flag=abort_flag)
             if tool:
                 self.tools[tool_name] = tool
 
@@ -157,15 +166,19 @@ class ToolDiscovery:
         _save_cache(cache_data)
         return self.tools
 
-    def discover_tool(self, tool_name: str) -> Optional[DiscoveredTool]:
+    def discover_tool(
+        self,
+        tool_name: str,
+        abort_flag: Optional[threading.Event] = None,
+    ) -> Optional[DiscoveredTool]:
         """Discover a specific tool by name."""
         tool_path = self.which(tool_name)
         if not tool_path:
             return None
 
-        version = self._get_version(tool_name, tool_path)
-        available_models = self._get_models(tool_name)
-        authenticated = self._get_authenticated(tool_name)
+        version = self._get_version(tool_name, tool_path, abort_flag=abort_flag)
+        available_models = self._get_models(tool_name, abort_flag=abort_flag)
+        authenticated = self._get_authenticated(tool_name, abort_flag=abort_flag)
 
         return DiscoveredTool(
             name=tool_name,
@@ -177,8 +190,15 @@ class ToolDiscovery:
             enabled=True,
         )
 
-    def _get_version(self, command: str, tool_path: str) -> str:
+    def _get_version(
+        self,
+        command: str,
+        tool_path: str,
+        abort_flag: Optional[threading.Event] = None,
+    ) -> str:
         """Get tool version."""
+        if abort_flag and abort_flag.is_set():
+            return "unknown"
         try:
             result = subprocess.run(
                 [command, "--version"],
@@ -192,8 +212,14 @@ class ToolDiscovery:
             pass
         return "unknown"
 
-    def _get_models(self, command: str) -> list[str]:
+    def _get_models(
+        self,
+        command: str,
+        abort_flag: Optional[threading.Event] = None,
+    ) -> list[str]:
         """Get available models for a tool."""
+        if abort_flag and abort_flag.is_set():
+            return []
         try:
             result = subprocess.run(
                 [command, "models"],
@@ -212,8 +238,14 @@ class ToolDiscovery:
             pass
         return []
 
-    def _get_authenticated(self, command: str) -> list[str]:
+    def _get_authenticated(
+        self,
+        command: str,
+        abort_flag: Optional[threading.Event] = None,
+    ) -> list[str]:
         """Get authenticated providers for a tool."""
+        if abort_flag and abort_flag.is_set():
+            return []
         try:
             result = subprocess.run(
                 [command, "auth", "list"],
